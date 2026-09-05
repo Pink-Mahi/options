@@ -67,6 +67,10 @@ export async function POST(req: Request) {
       minCallPremiumYieldPct:
         Number(body.minCallPremiumYieldPct) > 0 ? Number(body.minCallPremiumYieldPct) : undefined,
       averageDownWithPremium: body.averageDownWithPremium === true,
+      buyBackPct:
+        Number(body.buyBackPct) > 0 && Number(body.buyBackPct) < 1
+          ? Number(body.buyBackPct)
+          : undefined,
     });
 
     return NextResponse.json({

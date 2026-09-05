@@ -44,6 +44,7 @@ export function BacktestView() {
   const [averageDown, setAverageDown] = useState(false);
   const [fillAssumption, setFillAssumption] = useState<"bid" | "mid">("bid");
   const [startingCapital, setStartingCapital] = useState(0);
+  const [buyBackPct, setBuyBackPct] = useState(0);
   const [result, setResult] = useState<BacktestResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -67,6 +68,7 @@ export function BacktestView() {
           averageDownWithPremium: averageDown,
           fillAssumption,
           startingCapital: startingCapital > 0 ? startingCapital : undefined,
+          buyBackPct: buyBackPct > 0 ? buyBackPct / 100 : undefined,
         }),
         cache: "no-store",
       });
@@ -222,6 +224,19 @@ export function BacktestView() {
               />
             </div>
             <div className="space-y-1.5">
+              <Label htmlFor="bt-buyback">Buy back at % profit</Label>
+              <Input
+                id="bt-buyback"
+                type="number"
+                step="5"
+                min="0"
+                max="95"
+                value={buyBackPct || ""}
+                onChange={(e) => setBuyBackPct(Number(e.target.value))}
+                placeholder="0 = hold to expiry"
+              />
+            </div>
+            <div className="space-y-1.5">
               <Label htmlFor="bt-range">History</Label>
               <select
                 id="bt-range"
@@ -285,6 +300,12 @@ export function BacktestView() {
               the modeled mid (realistic for marketable orders). <em>Mid</em> assumes perfect fills —
               optimistic. <strong className="text-foreground">Starting capital</strong> sets the buy &amp;
               hold comparison baseline; leave blank to auto-size it to the position (spot × contracts × 100).
+            </p>
+            <p>
+              <strong className="text-foreground">Buy back at % profit</strong> places a GTC order to close
+              the option early once it decays to that profit level. E.g. 50 = if you sold for $2.00, the order
+              buys back at $1.00 — you keep $1.00 and free the position for a new cycle immediately. Checked
+              daily. Common values: 50% (Tastytrade-style), 75%, 80%. 0 = hold to expiration.
             </p>
           </div>
           <label className="mt-3 flex items-start gap-2 text-sm cursor-pointer">
@@ -388,6 +409,12 @@ export function BacktestView() {
                 value={`${formatCurrency(result.endingCostBasis, 2)} × ${result.endingShares} sh`}
               />
             )}
+            {result.earlyCloseCount > 0 && (
+              <Stat
+                label="Closed early (buy-back)"
+                value={`${result.earlyCloseCount} of ${result.totalCycles}`}
+              />
+            )}
             <Stat label="Expired worthless" value={formatPercent(result.winRate)} />
             <Stat label="Total premium" value={formatCurrency(result.totalPremiumIncome, 0)} />
             <Stat
@@ -470,6 +497,9 @@ export function BacktestView() {
                     )}
                   </>
                 )}
+                {result.earlyCloseCount > 0 && (
+                  <Row label="Closed early (buy-back)" value={String(result.earlyCloseCount)} />
+                )}
               </CardContent>
             </Card>
 
@@ -547,7 +577,7 @@ export function BacktestView() {
 }
 
 function outcomeVariant(outcome: string): "profit" | "warning" | "loss" | "secondary" {
-  if (outcome === "EXPIRED_WORTHLESS") return "profit";
+  if (outcome === "EXPIRED_WORTHLESS" || outcome === "BOUGHT_BACK") return "profit";
   if (outcome === "CALLED_AWAY") return "warning";
   if (outcome === "ASSIGNED") return "loss";
   return "secondary"; // NO_FILL, ROLLED

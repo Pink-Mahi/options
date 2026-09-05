@@ -319,6 +319,64 @@ describe("runBacktest - reinvest premium to average down", () => {
   });
 });
 
+describe("runBacktest - GTC buy-back", () => {
+  const baseConfig = {
+    strategy: "COVERED_CALL" as const,
+    symbol: "TEST",
+    deltaTarget: 0.30,
+    dteTarget: 45,
+    contracts: 1,
+    riskFreeRate: 0.05,
+    startingCapital: 10000,
+    shares: 100,
+    strikeInterval: 5,
+    fillAssumption: "mid" as const,
+  };
+
+  it("holds to expiration when buyBackPct is unset", () => {
+    const prices = generatePrices(100, 400, 0.02, 0.0003);
+    const result = runBacktest(prices, baseConfig);
+    expect(result.earlyCloseCount).toBe(0);
+    expect(result.trades.every((t) => t.outcome !== "BOUGHT_BACK")).toBe(true);
+    expect(result.trades.every((t) => t.exitPremium == null)).toBe(true);
+  });
+
+  it("closes trades early when the buy-back target is reached", () => {
+    const prices = generatePrices(100, 600, 0.02, 0.0003);
+    const result = runBacktest(prices, { ...baseConfig, buyBackPct: 0.5 });
+    expect(result.earlyCloseCount).toBeGreaterThan(0);
+    const boughtBack = result.trades.filter((t) => t.outcome === "BOUGHT_BACK");
+    expect(boughtBack.length).toBe(result.earlyCloseCount);
+    for (const t of boughtBack) {
+      // Exit price must be at or below the 50% trigger
+      expect(t.exitPremium).not.toBeNull();
+      expect(t.exitPremium!).toBeLessThanOrEqual(t.premiumPerShare * 0.5 + 1e-9);
+      // Closed before the full DTE
+      expect(t.daysHeld).toBeLessThan(45);
+    }
+  });
+
+  it("early close shortens average holding period", () => {
+    const prices = generatePrices(100, 600, 0.02, 0.0003);
+    const hold = runBacktest(prices, baseConfig);
+    const managed = runBacktest(prices, { ...baseConfig, buyBackPct: 0.5 });
+    expect(managed.avgDaysPerCycle).toBeLessThan(hold.avgDaysPerCycle);
+    // More cycles fit in the same window when closing early
+    expect(managed.totalCycles).toBeGreaterThanOrEqual(hold.totalCycles);
+  });
+
+  it("bought-back trades keep the captured profit", () => {
+    const prices = generatePrices(100, 600, 0.02, 0.0003);
+    const result = runBacktest(prices, { ...baseConfig, buyBackPct: 0.5 });
+    const boughtBack = result.trades.filter((t) => t.outcome === "BOUGHT_BACK");
+    for (const t of boughtBack) {
+      // Option leg profit = (sold - bought back) * 100 * contracts > 0
+      const optionPnl = (t.premiumPerShare - t.exitPremium!) * 100 * t.contracts;
+      expect(optionPnl).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe("runBacktest - edge cases", () => {
   it("handles insufficient data gracefully", () => {
     const prices = generatePrices(100, 30, 0.02);

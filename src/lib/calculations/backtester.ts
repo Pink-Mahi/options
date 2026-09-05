@@ -62,6 +62,13 @@ export interface BacktestConfig {
    * future calls can be sold at lower strikes without violating the floor.
    */
   averageDownWithPremium?: boolean;
+  /**
+   * GTC buy-back target as a fraction of max profit (e.g. 0.5 = buy back when
+   * the option is worth half what it was sold for). The backtester re-prices
+   * the open option daily and closes early when the target is reached, freeing
+   * capital for the next cycle sooner. 0/undefined = hold to expiration.
+   */
+  buyBackPct?: number;
 }
 
 export interface BacktestTrade {
@@ -72,7 +79,7 @@ export interface BacktestTrade {
   premiumPerShare: number;
   contracts: number;
   premiumIncome: number;
-  outcome: "EXPIRED_WORTHLESS" | "ASSIGNED" | "CALLED_AWAY" | "ROLLED" | "NO_FILL";
+  outcome: "EXPIRED_WORTHLESS" | "ASSIGNED" | "CALLED_AWAY" | "ROLLED" | "NO_FILL" | "BOUGHT_BACK";
   stockPriceAtOpen: number;
   stockPriceAtClose: number;
   /** P/L from this cycle including stock movement if assigned/called */
@@ -83,6 +90,8 @@ export interface BacktestTrade {
   flooredByCostBasis: boolean;
   /** Premium as a fraction of the stock price at open (e.g. 0.025 = 2.5%) */
   premiumYield: number;
+  /** Price per share paid to buy the option back early (null if held to expiry) */
+  exitPremium: number | null;
 }
 
 export interface BacktestResult {
@@ -126,6 +135,8 @@ export interface BacktestResult {
   endingShares: number;
   /** Cost basis of held shares at the end (null if no shares held) */
   endingCostBasis: number | null;
+  /** Cycles closed early by the GTC buy-back order */
+  earlyCloseCount: number;
   warnings: string[];
 }
 
@@ -296,6 +307,7 @@ export function runBacktest(
   let premiumCash = 0;
   let averagedDownLots = 0;
   let reinvestedPremium = 0;
+  let earlyCloseCount = 0;
 
   const firstPrice = prices[0];
   const lastPrice = prices[prices.length - 1];
@@ -330,6 +342,7 @@ export function runBacktest(
       reinvestedPremium: 0,
       endingShares: 0,
       endingCostBasis: null,
+      earlyCloseCount: 0,
       warnings: ["No price data available."],
     };
   }
@@ -413,6 +426,7 @@ export function runBacktest(
     // cycle; a later fill means a shorter remaining DTE.
     let openSpot = spot;
     let openDate = openPrice.date;
+    let openIdx = idx;
     let strike = 0;
     let premium = 0;
     let flooredByMin = false;
@@ -445,6 +459,7 @@ export function runBacktest(
           filled = true;
           openSpot = trySpot;
           openDate = tryPoint.date;
+          openIdx = tryIdx;
           strike = res.strike;
           premium = res.premium;
           flooredByMin = res.flooredByMin;
@@ -483,6 +498,43 @@ export function runBacktest(
       if (filled) callPremiumYieldSum += premiumYield;
     }
 
+    // --- GTC buy-back simulation ------------------------------------------
+    // A resting limit order to close the position once the option decays to
+    // (1 - buyBackPct) of the sale price. Checked daily from fill to expiry.
+    const buyBackPct = config.buyBackPct ?? 0;
+    let exitPremium: number | null = null;
+    let effCloseIdx = closeIdx;
+    let effCloseDate = closePrice.date;
+    let effCloseSpot = closeSpot;
+
+    if (filled && buyBackPct > 0 && buyBackPct < 1) {
+      const trigger = fillPrice * (1 - buyBackPct);
+      for (let d = openIdx + 1; d <= closeIdx; d++) {
+        const p = prices[d];
+        if (!p) continue;
+        const dSpot = p.adjustedClose;
+        const dIv = realizedVol(prices, d, 30);
+        const remainingDays =
+          (new Date(closePrice.date).getTime() - new Date(p.date).getTime()) /
+          (1000 * 60 * 60 * 24);
+        const bs = blackScholes({
+          spot: dSpot,
+          strike,
+          timeToExpiry: Math.max(remainingDays, 0.5) / 365,
+          riskFreeRate: config.riskFreeRate,
+          volatility: dIv,
+          optionType,
+        });
+        if (bs.price <= trigger) {
+          exitPremium = bs.price;
+          effCloseIdx = d;
+          effCloseDate = p.date;
+          effCloseSpot = dSpot;
+          break;
+        }
+      }
+    }
+
     let outcome: BacktestTrade["outcome"];
     let cyclePnl = premiumIncome; // start with premium
 
@@ -490,14 +542,25 @@ export function runBacktest(
       // GTC limit never reached — shares sat uncovered for the cycle.
       outcome = "NO_FILL";
       noFillCount++;
-      cyclePnl = (closeSpot - openSpot) * sharesHeld;
+      cyclePnl = (effCloseSpot - openSpot) * sharesHeld;
+    } else if (exitPremium != null) {
+      // Bought back early at the GTC target — keep the difference as profit.
+      outcome = "BOUGHT_BACK";
+      earlyCloseCount++;
+      const buybackCost = exitPremium * 100 * activeContracts;
+      if (optionType === "CALL") {
+        // Shares still held; mark stock move open -> buyback date.
+        cyclePnl = premiumIncome - buybackCost + (effCloseSpot - openSpot) * sharesHeld;
+      } else {
+        cyclePnl = premiumIncome - buybackCost;
+      }
     } else if (optionType === "CALL") {
       // Short call against shares. Stock P/L is marked cycle-open -> cycle-close
       // for EVERY cycle so the equity curve tracks the shares continuously.
       // Upside is capped at the strike when the call finishes ITM.
-      const stockExit = closeSpot > strike ? strike : closeSpot;
+      const stockExit = effCloseSpot > strike ? strike : effCloseSpot;
       const stockPnl = (stockExit - openSpot) * sharesHeld;
-      if (closeSpot > strike) {
+      if (effCloseSpot > strike) {
         outcome = "CALLED_AWAY";
         calledAwayCount++;
         cyclePnl = premiumIncome + stockPnl;
@@ -512,12 +575,12 @@ export function runBacktest(
       }
     } else {
       // Short put
-      if (closeSpot < strike) {
+      if (effCloseSpot < strike) {
         // Assigned — buy shares at strike
         outcome = "ASSIGNED";
         assignmentCount++;
         // P/L = premium - (strike - currentStockValue) * contracts * 100
-        cyclePnl = premiumIncome - (strike - closeSpot) * config.contracts * 100;
+        cyclePnl = premiumIncome - (strike - effCloseSpot) * config.contracts * 100;
         if (config.strategy === "WHEEL") {
           sharesHeld = config.contracts * 100; // shares assigned
           shareCostBasis = strike; // we "bought" the shares at the put strike
@@ -532,14 +595,14 @@ export function runBacktest(
     const daysHeld = Math.max(
       1,
       Math.round(
-        (new Date(closePrice.date).getTime() - new Date(openDate).getTime()) /
+        (new Date(effCloseDate).getTime() - new Date(openDate).getTime()) /
           (1000 * 60 * 60 * 24),
       ),
     );
 
     trades.push({
       openDate,
-      closeDate: closePrice.date,
+      closeDate: effCloseDate,
       optionType,
       strike,
       premiumPerShare: fillPrice,
@@ -547,11 +610,12 @@ export function runBacktest(
       premiumIncome,
       outcome,
       stockPriceAtOpen: openSpot,
-      stockPriceAtClose: closeSpot,
+      stockPriceAtClose: effCloseSpot,
       cyclePnl,
       daysHeld,
       flooredByCostBasis: flooredByMin,
       premiumYield,
+      exitPremium,
     });
 
     // Update equity
@@ -561,15 +625,15 @@ export function runBacktest(
     prevStrategyEquity = strategyEquity;
 
     // Update buy-and-hold
-    buyHoldEquity = config.startingCapital * (closeSpot / buyHoldStartPrice);
+    buyHoldEquity = config.startingCapital * (effCloseSpot / buyHoldStartPrice);
 
     equityCurve.push({
-      date: closePrice.date,
+      date: effCloseDate,
       strategyEquity,
       buyHoldEquity,
     });
 
-    idx = closeIdx;
+    idx = effCloseIdx;
   }
 
   // NOTE: stock P/L is already marked into each cycle above (cycle-open ->
@@ -600,7 +664,10 @@ export function runBacktest(
     totalCycles: trades.length,
     winRate: trades.length > 0 ? expiredWorthlessCount / trades.length : 0,
     avgPremiumPerCycle: trades.length > 0 ? cashFromPremium / trades.length : 0,
-    avgDaysPerCycle: config.dteTarget,
+    avgDaysPerCycle:
+      trades.length > 0
+        ? trades.reduce((s, t) => s + t.daysHeld, 0) / trades.length
+        : 0,
     assignmentCount,
     calledAwayCount,
     expiredWorthlessCount,
@@ -621,6 +688,7 @@ export function runBacktest(
     reinvestedPremium,
     endingShares: sharesHeld,
     endingCostBasis: shareCostBasis,
+    earlyCloseCount,
     warnings,
   };
 }
