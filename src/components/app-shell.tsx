@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Calculator, LayoutDashboard, PieChart, Search, Sparkles, Sun, Moon, Wallet, Layers, Eye, Shield, LogOut, User as UserIcon } from "lucide-react";
+import { Calculator, LayoutDashboard, PieChart, Search, Sparkles, Sun, Moon, Wallet, Layers, Eye, Shield, LogOut, User as UserIcon, KeyRound } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
@@ -32,6 +32,7 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
   const { theme, toggle } = useTheme();
   const [user, setUser] = useState<SessionUser | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [pwModal, setPwModal] = useState(false);
 
   useEffect(() => {
     fetch("/api/auth/session", { cache: "no-store" })
@@ -104,6 +105,12 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
                     </div>
                     <button
                       className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-secondary"
+                      onClick={() => { setMenuOpen(false); setPwModal(true); }}
+                    >
+                      <KeyRound className="h-3.5 w-3.5" /> Change password
+                    </button>
+                    <button
+                      className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-secondary"
                       onClick={() => { setMenuOpen(false); handleLogout(); }}
                     >
                       <LogOut className="h-3.5 w-3.5" /> Sign out
@@ -120,10 +127,101 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
           </div>
         )}
       </header>
+      {pwModal && <ChangePasswordModal onClose={() => setPwModal(false)} />}
       <main className="container flex-1 py-6">{children}</main>
       <footer className="border-t py-3 text-center text-xs text-muted-foreground">
         Educational tool only. Not investment advice. All calculations are estimates from market data and deterministic formulas.
       </footer>
+    </div>
+  );
+}
+
+function ChangePasswordModal({ onClose }: { onClose: () => void }) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [success, setSuccess] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (next !== confirm) {
+      setErr("New passwords do not match");
+      return;
+    }
+    if (next.length < 6) {
+      setErr("New password must be at least 6 characters");
+      return;
+    }
+    setLoading(true);
+    setErr("");
+    const res = await fetch("/api/auth/change-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ currentPassword: current, newPassword: next }),
+    });
+    setLoading(false);
+    if (res.ok) {
+      setSuccess(true);
+      setTimeout(onClose, 1500);
+    } else {
+      const data = await res.json().catch(() => ({}));
+      setErr(data.error ?? "Failed to change password");
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div className="w-full max-w-sm rounded-lg border bg-background p-6 shadow-lg" onClick={(e) => e.stopPropagation()}>
+        <h2 className="mb-4 text-lg font-semibold">Change Password</h2>
+        {success ? (
+          <p className="text-sm text-green-600 dark:text-green-400">Password changed successfully.</p>
+        ) : (
+          <form onSubmit={handleSubmit} className="space-y-3">
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Current password</label>
+              <input
+                type="password"
+                required
+                value={current}
+                onChange={(e) => setCurrent(e.target.value)}
+                className="w-full rounded-md border bg-transparent px-3 py-2 text-sm"
+                autoComplete="current-password"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">New password</label>
+              <input
+                type="password"
+                required
+                value={next}
+                onChange={(e) => setNext(e.target.value)}
+                className="w-full rounded-md border bg-transparent px-3 py-2 text-sm"
+                autoComplete="new-password"
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-sm font-medium">Confirm new password</label>
+              <input
+                type="password"
+                required
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                className="w-full rounded-md border bg-transparent px-3 py-2 text-sm"
+                autoComplete="new-password"
+              />
+            </div>
+            {err && <p className="text-sm text-red-500">{err}</p>}
+            <div className="flex gap-2 pt-2">
+              <Button type="button" variant="outline" className="flex-1" onClick={onClose}>Cancel</Button>
+              <Button type="submit" className="flex-1" disabled={loading}>
+                {loading ? "Changing…" : "Change password"}
+              </Button>
+            </div>
+          </form>
+        )}
+      </div>
     </div>
   );
 }
