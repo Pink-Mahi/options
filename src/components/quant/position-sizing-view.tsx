@@ -324,7 +324,7 @@ export function PositionSizingView() {
                 <p><strong>Weight</strong> = what fraction of your capital to allocate to this position.</p>
                 <p><strong>Units</strong> = how many shares to buy (or short).</p>
                 <p><strong>Leverage</strong> = position value divided by capital. &gt;1 = using borrowed money.</p>
-                <p><strong>Vol Contribution</strong> = how much this position adds to your portfolio's overall volatility. Should match your target.</p>
+                <p><strong>Vol Contribution</strong> = how much this position adds to your portfolio&apos;s overall volatility. Should match your target.</p>
                 <p><strong>Kelly Weight</strong> = the mathematically optimal bet size based on your expected return and volatility. Most traders use a fraction (e.g. 25%) to reduce drawdowns.</p>
               </div>
             </CardContent>

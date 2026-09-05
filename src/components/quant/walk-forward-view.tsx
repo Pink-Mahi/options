@@ -535,7 +535,7 @@ export function WalkForwardView() {
               <p><strong>Excess return</strong> = strategy return minus buy-and-hold return. Positive means the signal added value.</p>
               <p className="mt-1"><strong>Hit rate</strong> = percentage of trades that were profitable.</p>
               <p className="mt-1"><strong>Time in market</strong> = how often the strategy was actually invested. Low = mostly in cash.</p>
-              <p className="mt-1"><strong>Max drawdown</strong> = worst peak-to-trough decline. This is the pain you'd have to sit through.</p>
+              <p className="mt-1"><strong>Max drawdown</strong> = worst peak-to-trough decline. This is the pain you&apos;d have to sit through.</p>
             </div>
           </CardContent>
         </Card>
@@ -656,7 +656,7 @@ export function WalkForwardView() {
             <CardTitle className="text-sm">Selected Factor Weights by Fold</CardTitle>
             <p className="text-xs text-muted-foreground">
               The weight the optimizer chose for each factor during training. If weights swing wildly between folds,
-              the strategy is unstable — it's fitting noise, not a persistent pattern. Stable weights across folds
+              the strategy is unstable — it&apos;s fitting noise, not a persistent pattern. Stable weights across folds
               suggest a more robust signal.
             </p>
           </CardHeader>
