@@ -17,7 +17,15 @@ import { calculateCoveredCall } from "@/lib/calculations/covered-call";
 import { rollingReturnDistribution } from "@/lib/calculations/historical";
 import { getPortfolio } from "@/lib/database/portfolio-repo";
 import { analyzePortfolioIncome } from "@/features/portfolio/income-planner";
-import type { CashSecuredPutCandidate, CoveredCallCandidate, ScannerObjective } from "@/lib/types";
+import { blackScholes, binomialAmerican, impliedVolatility } from "@/lib/calculations/pricing-model";
+import { runBacktest, type BacktestStrategy } from "@/lib/calculations/backtester";
+import { analyzeMultiLegStrategy, type StrategyLeg, type LegAction } from "@/lib/calculations/multi-leg";
+import { assessAssignmentRisk } from "@/lib/calculations/assignment-risk";
+import { computeBetaWeightedDelta, type PositionDelta } from "@/lib/calculations/beta-risk";
+import { getMarketRegimeSnapshot } from "@/features/market-data/regime-service";
+import { estimateExecution } from "@/lib/calculations/execution";
+import { getCorporateEvents } from "@/features/market-data/service";
+import type { CashSecuredPutCandidate, CoveredCallCandidate, OptionType, ScannerObjective } from "@/lib/types";
 
 export interface ToolExecutionResult {
   name: string;
@@ -70,6 +78,20 @@ export async function executeTool(
         return await execEarnings(args);
       case "getPeerComparison":
         return await execPeers(args);
+      case "priceOption":
+        return execPriceOption(args);
+      case "runBacktest":
+        return await execRunBacktest(args);
+      case "analyzeMultiLegStrategy":
+        return execMultiLeg(args);
+      case "assessAssignmentRisk":
+        return await execAssignmentRisk(args);
+      case "getPortfolioRisk":
+        return await execPortfolioRisk(userId);
+      case "getMarketRegime":
+        return await execMarketRegime();
+      case "estimateExecution":
+        return execEstimateExecution(args);
       case "searchStock":
         return { name, result: { note: "Search by exact symbol is supported via getQuote.", symbol: String(args.query ?? "").toUpperCase() }, warnings: [] };
       default:
@@ -638,6 +660,439 @@ function compactCsp(c: CashSecuredPutCandidate) {
     liquidityScore: c.liquidityScore,
     score: c.score.total,
     earningsBeforeExpiration: c.earningsBeforeExpiration,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 13 engines
+// ---------------------------------------------------------------------------
+
+function execPriceOption(args: Record<string, unknown>): ToolExecutionResult {
+  const spot = num(args.spot);
+  const strike = num(args.strike);
+  const dte = num(args.daysToExpiration);
+  const optionType = str(args.optionType) === "PUT" ? "PUT" : "CALL";
+  const model = String(args.model ?? "blackScholes").toLowerCase();
+  const riskFreeRate = num(args.riskFreeRate) ?? 0.05;
+  const dividendYield = num(args.dividendYield) ?? 0;
+  const marketPrice = num(args.marketPrice);
+  let volatility = num(args.volatility);
+
+  if (spot == null || strike == null || dte == null) {
+    return { name: "priceOption", result: null, warnings: ["spot, strike and daysToExpiration are required."], error: "bad_args" };
+  }
+
+  const warnings: string[] = [];
+  const timeToExpiry = dte / 365;
+  let solvedIv: number | null = null;
+
+  // If a market price is supplied, back out IV and prefer it over any guess.
+  if (marketPrice != null && marketPrice > 0) {
+    solvedIv = impliedVolatility(
+      marketPrice,
+      spot,
+      strike,
+      timeToExpiry,
+      riskFreeRate,
+      optionType as OptionType,
+      dividendYield,
+    );
+    if (solvedIv == null) {
+      warnings.push("Implied volatility did not converge for the supplied market price.");
+    } else {
+      volatility = solvedIv;
+    }
+  }
+
+  if (volatility == null || volatility <= 0) {
+    return {
+      name: "priceOption",
+      result: null,
+      warnings: ["Provide either volatility or a marketPrice so implied volatility can be solved."],
+      error: "bad_args",
+    };
+  }
+
+  const input = { spot, strike, timeToExpiry, riskFreeRate, volatility, dividendYield, optionType: optionType as OptionType };
+  const priced = model === "binomial" ? binomialAmerican(input) : blackScholes(input);
+
+  const intrinsic = optionType === "CALL" ? Math.max(0, spot - strike) : Math.max(0, strike - spot);
+
+  return {
+    name: "priceOption",
+    result: {
+      model: model === "binomial" ? "binomialCRR(American)" : "blackScholes(European)",
+      optionType,
+      spot,
+      strike,
+      daysToExpiration: dte,
+      volatilityUsed: volatility,
+      impliedVolatilitySolved: solvedIv,
+      theoreticalPrice: round(priced.price),
+      marketPrice,
+      edgeVsMarket: marketPrice != null ? round(priced.price - marketPrice) : null,
+      verdict:
+        marketPrice == null
+          ? null
+          : priced.price > marketPrice
+            ? "market price is BELOW theoretical (option looks cheap)"
+            : priced.price < marketPrice
+              ? "market price is ABOVE theoretical (option looks rich)"
+              : "market price matches theoretical",
+      intrinsicValue: round(intrinsic),
+      extrinsicValue: round(Math.max(0, priced.price - intrinsic)),
+      greeks: priced.greeks,
+      note: "Theoretical values assume constant volatility and no transaction costs. Compare against the live bid/ask, not the midpoint alone.",
+    },
+    warnings,
+  };
+}
+
+async function execRunBacktest(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  const symbol = str(args.symbol);
+  const rawStrategy = str(args.strategy).replace(/[\s-]/g, "_");
+  const allowed: BacktestStrategy[] = ["COVERED_CALL", "CASH_SECURED_PUT", "WHEEL"];
+  const strategy = (allowed as string[]).includes(rawStrategy)
+    ? (rawStrategy as BacktestStrategy)
+    : null;
+
+  if (!strategy) {
+    return {
+      name: "runBacktest",
+      result: null,
+      warnings: [`strategy must be one of ${allowed.join(", ")}.`],
+      error: "bad_args",
+    };
+  }
+
+  // getHistoricalPrices accepts a fixed set of range tokens.
+  const allowedRanges = ["1m", "3m", "6m", "1y", "3y", "5y", "10y", "max"] as const;
+  type HistRange = (typeof allowedRanges)[number];
+  const requestedRange = String(args.range ?? "3y").toLowerCase();
+  const range: HistRange = (allowedRanges as readonly string[]).includes(requestedRange)
+    ? (requestedRange as HistRange)
+    : "3y";
+  const hist = await getHistoricalPrices({ symbol, range });
+  const quote = await getQuote({ symbol });
+  const spot = quote.data.price;
+
+  const contracts = num(args.contracts) ?? 1;
+  const shares = strategy === "CASH_SECURED_PUT" ? 0 : contracts * 100;
+  // Fund the comparison with enough capital to actually hold the position.
+  const startingCapital = Math.max(spot * Math.max(shares, contracts * 100), 1);
+
+  const result = runBacktest(hist.data.points, {
+    strategy,
+    symbol,
+    deltaTarget: num(args.deltaTarget) ?? 0.3,
+    dteTarget: num(args.dteTarget) ?? 45,
+    contracts,
+    riskFreeRate: 0.05,
+    startingCapital,
+    shares,
+    strikeInterval: spot >= 200 ? 5 : spot >= 50 ? 2.5 : 1,
+    fillAssumption: "bid",
+  });
+
+  const warnings = [...result.warnings];
+  warnings.push(
+    "Premiums are MODELED with Black-Scholes using trailing 30-day realized volatility, not historical option quotes. Treat results as an approximation, not an achievable track record.",
+  );
+
+  return {
+    name: "runBacktest",
+    result: {
+      symbol,
+      strategy,
+      period: { start: result.startDate, end: result.endDate },
+      totalCycles: result.totalCycles,
+      winRate: pct(result.winRate),
+      totalPremiumIncome: round(result.totalPremiumIncome),
+      avgPremiumPerCycle: round(result.avgPremiumPerCycle),
+      expiredWorthless: result.expiredWorthlessCount,
+      assigned: result.assignmentCount,
+      calledAway: result.calledAwayCount,
+      strategyReturn: pct(result.strategyReturn),
+      strategyAnnualized: pct(result.strategyAnnualizedReturn),
+      buyHoldReturn: pct(result.buyHoldReturn),
+      buyHoldAnnualized: pct(result.buyHoldAnnualizedReturn),
+      outperformance: pct(result.outperformance),
+      maxDrawdown: pct(result.maxDrawdown),
+      sharpeRatio: result.sharpeRatio != null ? round(result.sharpeRatio) : null,
+      startingCapital: round(startingCapital),
+      // Trim the trade log so we do not blow the context window.
+      recentTrades: result.trades.slice(-8).map((t) => ({
+        open: t.openDate,
+        close: t.closeDate,
+        type: t.optionType,
+        strike: t.strike,
+        premium: round(t.premiumIncome),
+        outcome: t.outcome,
+        cyclePnl: round(t.cyclePnl),
+      })),
+    },
+    warnings,
+  };
+}
+
+function execMultiLeg(args: Record<string, unknown>): ToolExecutionResult {
+  const underlyingPrice = num(args.underlyingPrice);
+  const rawLegs = Array.isArray(args.legs) ? args.legs : [];
+
+  if (underlyingPrice == null || rawLegs.length === 0) {
+    return { name: "analyzeMultiLegStrategy", result: null, warnings: ["underlyingPrice and at least one leg are required."], error: "bad_args" };
+  }
+
+  const legs: StrategyLeg[] = [];
+  for (const raw of rawLegs) {
+    const l = raw as Record<string, unknown>;
+    const action = str(l.action) === "SELL" ? "SELL" : "BUY";
+    const optionType = str(l.optionType) === "PUT" ? "PUT" : "CALL";
+    const strike = num(l.strike);
+    const pricePerShare = num(l.pricePerShare);
+    const contracts = num(l.contracts) ?? 1;
+    const daysToExpiration = num(l.daysToExpiration) ?? 30;
+    if (strike == null || pricePerShare == null) continue;
+    legs.push({
+      action: action as LegAction,
+      optionType: optionType as OptionType,
+      strike,
+      pricePerShare,
+      contracts,
+      daysToExpiration,
+      expiration: String(l.expiration ?? ""),
+    });
+  }
+
+  if (legs.length === 0) {
+    return { name: "analyzeMultiLegStrategy", result: null, warnings: ["No valid legs: each leg needs a strike and pricePerShare."], error: "bad_args" };
+  }
+
+  const r = analyzeMultiLegStrategy(legs, underlyingPrice);
+
+  return {
+    name: "analyzeMultiLegStrategy",
+    result: {
+      kind: r.kind,
+      underlyingPrice,
+      legs: r.legs.map((l) => ({
+        action: l.action,
+        type: l.optionType,
+        strike: l.strike,
+        premium: l.pricePerShare,
+        contracts: l.contracts,
+        dte: l.daysToExpiration,
+      })),
+      netPremiumPerShare: round(r.netPremiumPerShare),
+      netPremiumTotal: round(r.netPremiumTotal),
+      creditOrDebit: r.netPremiumTotal >= 0 ? "CREDIT" : "DEBIT",
+      maxProfit: r.maxProfit != null ? round(r.maxProfit) : null,
+      maxLoss: r.maxLoss != null ? round(r.maxLoss) : null,
+      breakevens: r.breakevens.map((b) => round(b)),
+      riskRewardRatio: r.riskRewardRatio != null ? round(r.riskRewardRatio) : null,
+      marginRequirement: r.marginRequirement != null ? round(r.marginRequirement) : null,
+      combinedGreeks: r.combinedGreeks,
+      notes: r.notes,
+    },
+    warnings: r.maxLoss == null ? ["This structure has undefined risk - max loss is theoretically unbounded."] : [],
+  };
+}
+
+async function execAssignmentRisk(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  const symbol = str(args.symbol);
+  const optionType = str(args.optionType) === "PUT" ? "PUT" : "CALL";
+  const strike = num(args.strike);
+  const dte = num(args.daysToExpiration);
+
+  if (strike == null || dte == null) {
+    return { name: "assessAssignmentRisk", result: null, warnings: ["strike and daysToExpiration are required."], error: "bad_args" };
+  }
+
+  const quote = await getQuote({ symbol });
+  const spot = quote.data.price;
+
+  const warnings: string[] = [];
+  let iv = num(args.impliedVolatility);
+  if (iv == null || iv <= 0) {
+    iv = 0.3;
+    warnings.push("No implied volatility supplied; assumed 30% which changes the extrinsic-value estimate.");
+  }
+
+  let dividends: Awaited<ReturnType<typeof getCorporateEvents>>["data"]["dividends"] = [];
+  try {
+    const events = await getCorporateEvents({ symbol });
+    dividends = events.data.dividends;
+  } catch {
+    warnings.push("Could not fetch dividend calendar; dividend-driven early exercise was not evaluated.");
+  }
+
+  const r = assessAssignmentRisk(optionType as OptionType, strike, spot, dte, iv, 0.05, dividends);
+
+  return {
+    name: "assessAssignmentRisk",
+    result: {
+      symbol,
+      optionType,
+      strike,
+      spot,
+      daysToExpiration: dte,
+      inTheMoney: optionType === "CALL" ? spot > strike : spot < strike,
+      riskLevel: r.riskLevel,
+      riskScore: round(r.riskScore),
+      earlyExerciseProbability: pct(r.earlyExerciseProbability),
+      extrinsicValue: round(r.extrinsicValue),
+      daysToExDividend: r.daysToExDiv,
+      dividendAmount: r.dividendAmount,
+      reasons: r.reasons,
+      recommendation: r.recommendation,
+    },
+    warnings,
+  };
+}
+
+async function execPortfolioRisk(userId?: string): Promise<ToolExecutionResult> {
+  if (!userId) {
+    return { name: "getPortfolioRisk", result: null, warnings: ["No authenticated user; cannot read the portfolio."], error: "no_user" };
+  }
+
+  const portfolio = await getPortfolio(userId);
+  const warnings: string[] = [];
+
+  // Aggregate share lots per symbol.
+  const bySymbol = new Map<string, number>();
+  for (const lot of portfolio.stockLots) {
+    bySymbol.set(lot.symbol, (bySymbol.get(lot.symbol) ?? 0) + lot.shares);
+  }
+
+  if (bySymbol.size === 0) {
+    return {
+      name: "getPortfolioRisk",
+      result: { note: "Portfolio has no stock holdings, so there is no directional or concentration exposure to measure." },
+      warnings: [],
+    };
+  }
+
+  // Beta is not available from the market-data provider, so use 1.0 and say so.
+  warnings.push(
+    "Beta is not supplied by the market-data provider, so every holding is beta-weighted at 1.0. Beta-weighted delta therefore equals raw delta and understates high-beta names.",
+  );
+
+  const positions: PositionDelta[] = [];
+  let spyPrice = 500;
+  try {
+    const spy = await getQuote({ symbol: "SPY" });
+    spyPrice = spy.data.price;
+  } catch {
+    warnings.push("Could not fetch SPY; used a $500 placeholder for SPY-equivalent dollar exposure.");
+  }
+
+  for (const [symbol, shares] of bySymbol) {
+    try {
+      const q = await getQuote({ symbol });
+      positions.push({
+        symbol,
+        delta: shares, // one share = 1.0 delta
+        marketValue: shares * q.data.price,
+        beta: 1.0,
+      });
+    } catch {
+      warnings.push(`Could not fetch a quote for ${symbol}; it was excluded.`);
+    }
+  }
+
+  const r = computeBetaWeightedDelta(positions, spyPrice);
+
+  return {
+    name: "getPortfolioRisk",
+    result: {
+      totalMarketValue: round(r.totalMarketValue),
+      netDelta: round(r.netDelta),
+      betaWeightedDelta: round(r.totalBetaWeightedDelta),
+      spyEquivalentExposure: round(r.spyEquivalentExposure),
+      directionalBias: r.directionalBias,
+      concentration: {
+        riskLevel: r.concentrationRisk.riskLevel,
+        largestPosition: pct(r.concentrationRisk.maxSinglePosition),
+        top3: pct(r.concentrationRisk.top3Concentration),
+        herfindahlIndex: round(r.concentrationRisk.herfindahlIndex),
+        warnings: r.concentrationRisk.warnings,
+      },
+      positions: r.weightedDeltaBySymbol.map((w) => ({
+        symbol: w.symbol,
+        marketValue: round(w.marketValue),
+        percentOfPortfolio: pct(w.percentOfPortfolio),
+        betaWeightedDelta: round(w.betaWeightedDelta),
+      })),
+    },
+    warnings,
+  };
+}
+
+async function execMarketRegime(): Promise<ToolExecutionResult> {
+  const r = await getMarketRegimeSnapshot();
+
+  return {
+    name: "getMarketRegime",
+    result: {
+      regime: r.regime,
+      description: r.description,
+      riskLevel: r.riskLevel,
+      vix: round(r.vix),
+      vixSource: r.vixSource,
+      spyTrend: r.spyTrend,
+      spyAbove200sma: r.spyAbove200sma,
+      spyRealizedVol30: pct(r.realizedVol30),
+      strategyImplications: r.strategyImplications,
+    },
+    warnings: r.warnings,
+  };
+}
+
+function execEstimateExecution(args: Record<string, unknown>): ToolExecutionResult {
+  const bid = num(args.bid);
+  const ask = num(args.ask);
+  const orderSize = num(args.orderSize) ?? 1;
+  const rawType = str(args.orderType);
+  const orderType = rawType === "MARKET" || rawType === "LIMIT" || rawType === "MID" ? rawType : "MID";
+
+  if (bid == null || ask == null) {
+    return { name: "estimateExecution", result: null, warnings: ["bid and ask are required."], error: "bad_args" };
+  }
+  if (ask < bid) {
+    return { name: "estimateExecution", result: null, warnings: ["ask cannot be lower than bid."], error: "bad_args" };
+  }
+
+  const r = estimateExecution({
+    bid,
+    ask,
+    volume: num(args.volume),
+    openInterest: num(args.openInterest),
+    orderSize,
+    orderType,
+    limitPrice: num(args.limitPrice) ?? undefined,
+  });
+
+  const mid = (bid + ask) / 2;
+
+  return {
+    name: "estimateExecution",
+    result: {
+      bid,
+      ask,
+      midpoint: round(mid),
+      spread: round(r.effectiveSpread),
+      spreadPercentOfMid: mid > 0 ? pct(r.effectiveSpread / mid) : null,
+      orderType,
+      orderSize,
+      estimatedFillPrice: round(r.estimatedFillPrice),
+      slippageVsMid: round(r.slippage),
+      slippageCostTotal: round(r.slippage * 100 * orderSize),
+      fillProbability: pct(r.fillProbability),
+      marketImpact: round(r.marketImpact),
+      liquidityWarning: r.warning,
+      note: "MARKET-order pricing assumes you are BUYING (paying the ask). For a sell order the slippage works against you symmetrically from the bid.",
+    },
+    warnings: r.warning ? [r.warning] : [],
   };
 }
 

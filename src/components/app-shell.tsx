@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Calculator, LayoutDashboard, PieChart, Search, Sparkles, Sun, Moon, Wallet, Layers, Eye, Shield, LogOut, User as UserIcon, KeyRound } from "lucide-react";
+import { Calculator, LayoutDashboard, PieChart, Search, Sparkles, Sun, Moon, Wallet, Layers, Eye, Shield, LogOut, User as UserIcon, KeyRound, History, GitBranch } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,8 @@ const NAV = [
   { href: "/watchlist", label: "Watchlist", icon: Eye },
   { href: "/income-planner", label: "Income", icon: Wallet },
   { href: "/calculator", label: "Calculator", icon: Calculator },
+  { href: "/strategy", label: "Strategies", icon: GitBranch },
+  { href: "/backtest", label: "Backtest", icon: History },
   { href: "/ai", label: "AI Assistant", icon: Sparkles },
 ];
 

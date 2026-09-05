@@ -131,6 +131,7 @@ function findStrikeByDelta(
   let bestStrike = roundStrike(spot, strikeInterval);
   let bestDeltaDiff = Infinity;
   let bestPremium = 0;
+  let bestDelta = 0;
 
   // Search strikes from 70% to 130% of spot
   const lowStrike = Math.floor(spot * 0.7 / strikeInterval) * strikeInterval;
@@ -145,10 +146,12 @@ function findStrikeByDelta(
       bestDeltaDiff = diff;
       bestStrike = strike;
       bestPremium = bs.price;
+      bestDelta = delta;
     }
   }
 
-  return { strike: bestStrike, delta: deltaTarget, premium: bestPremium };
+  // Return the ACHIEVED delta, not the requested target.
+  return { strike: bestStrike, delta: bestDelta, premium: bestPremium };
 }
 
 /** Compute max drawdown from an equity curve. */
@@ -163,16 +166,26 @@ function maxDrawdown(equity: number[]): number {
   return maxDd;
 }
 
-/** Compute Sharpe ratio from a return series (annualized, assuming 252 trading days). */
-function sharpeRatio(returns: number[], riskFreeRate: number = 0.04): number | null {
-  if (returns.length < 2) return null;
-  const dailyRf = riskFreeRate / 252;
-  const excessReturns = returns.map((r) => r - dailyRf);
+/**
+ * Compute Sharpe ratio from a series of PERIOD returns.
+ *
+ * `periodsPerYear` must match the sampling frequency of `returns`. The
+ * backtester samples once per option cycle (not daily), so passing 252 here
+ * would overstate Sharpe by sqrt(252 / cyclesPerYear).
+ */
+function sharpeRatio(
+  returns: number[],
+  periodsPerYear: number,
+  riskFreeRate: number = 0.04,
+): number | null {
+  if (returns.length < 2 || periodsPerYear <= 0) return null;
+  const periodRf = riskFreeRate / periodsPerYear;
+  const excessReturns = returns.map((r) => r - periodRf);
   const mean = excessReturns.reduce((s, r) => s + r, 0) / excessReturns.length;
   const variance = excessReturns.reduce((s, r) => s + (r - mean) ** 2, 0) / (excessReturns.length - 1);
   const stdDev = Math.sqrt(variance);
   if (stdDev === 0) return null;
-  return (mean / stdDev) * Math.sqrt(252);
+  return (mean / stdDev) * Math.sqrt(periodsPerYear);
 }
 
 // ---------------------------------------------------------------------------
@@ -246,8 +259,8 @@ export function runBacktest(
   const buyHoldStartPrice = firstPrice.adjustedClose;
   const tradingDaysPerCycle = Math.round(config.dteTarget * 252 / 365);
 
-  // Track daily returns for Sharpe
-  const dailyReturns: number[] = [];
+  // Track per-cycle returns for Sharpe (one sample per option cycle, NOT daily).
+  const cycleReturns: number[] = [];
   let prevStrategyEquity = strategyEquity;
 
   // Walk forward through prices
@@ -298,20 +311,22 @@ export function runBacktest(
     let cyclePnl = premiumIncome; // start with premium
 
     if (optionType === "CALL") {
-      // Short call
+      // Short call against shares. Stock P/L is marked cycle-open -> cycle-close
+      // for EVERY cycle so the equity curve tracks the shares continuously.
+      // Upside is capped at the strike when the call finishes ITM.
+      const stockExit = closeSpot > strike ? strike : closeSpot;
+      const stockPnl = (stockExit - spot) * sharesHeld;
       if (closeSpot > strike) {
-        // Called away — stock sold at strike
         outcome = "CALLED_AWAY";
         calledAwayCount++;
-        // P/L = premium + (strike - currentStockValue) * shares
-        cyclePnl = premiumIncome + (strike - spot) * sharesHeld;
+        cyclePnl = premiumIncome + stockPnl;
         if (config.strategy === "WHEEL") {
           sharesHeld = 0; // shares called away
         }
       } else {
         outcome = "EXPIRED_WORTHLESS";
         expiredWorthlessCount++;
-        cyclePnl = premiumIncome;
+        cyclePnl = premiumIncome + stockPnl;
       }
     } else {
       // Short put
@@ -348,8 +363,8 @@ export function runBacktest(
 
     // Update equity
     strategyEquity += cyclePnl;
-    const dailyReturn = (strategyEquity - prevStrategyEquity) / prevStrategyEquity;
-    if (Number.isFinite(dailyReturn)) dailyReturns.push(dailyReturn);
+    const cycleReturn = (strategyEquity - prevStrategyEquity) / prevStrategyEquity;
+    if (Number.isFinite(cycleReturn)) cycleReturns.push(cycleReturn);
     prevStrategyEquity = strategyEquity;
 
     // Update buy-and-hold
@@ -364,10 +379,9 @@ export function runBacktest(
     idx = closeIdx;
   }
 
-  // For covered call / wheel, add stock value to strategy equity
-  if (sharesHeld > 0 && lastPrice) {
-    strategyEquity += (lastPrice.adjustedClose - firstPrice.adjustedClose) * sharesHeld;
-  }
+  // NOTE: stock P/L is already marked into each cycle above (cycle-open ->
+  // cycle-close, capped at the strike when called away). Do NOT add
+  // full-period appreciation here or the stock move is counted twice.
 
   const totalDays = prices.length;
   const years = totalDays / 252;
@@ -380,7 +394,8 @@ export function runBacktest(
 
   const strategyEquityValues = equityCurve.map((e) => e.strategyEquity);
   const dd = maxDrawdown(strategyEquityValues.length > 0 ? strategyEquityValues : [config.startingCapital]);
-  const sr = sharpeRatio(dailyReturns, config.riskFreeRate);
+  const cyclesPerYear = config.dteTarget > 0 ? 365 / config.dteTarget : 0;
+  const sr = sharpeRatio(cycleReturns, cyclesPerYear, config.riskFreeRate);
 
   return {
     strategy: config.strategy,

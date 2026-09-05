@@ -73,16 +73,21 @@ export function assessAssignmentRisk(
     return daysToDiv >= 0 && daysToDiv <= daysToExpiration;
   });
 
+  // Resolve dividend timing ONCE for both option types. Previously these were
+  // only assigned inside the CALL branch, which made the put-side dividend
+  // check below unreachable.
   let daysToExDiv: number | null = null;
   let dividendAmount: number | null = null;
   let dividendVsExtrinsic: number | null = null;
 
+  if (nextDiv) {
+    daysToExDiv = Math.round((new Date(nextDiv.exDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+    dividendAmount = nextDiv.amount;
+  }
+
   if (optionType === "CALL") {
     // Short call early-assignment risk: primarily driven by dividends
     if (nextDiv) {
-      daysToExDiv = Math.round((new Date(nextDiv.exDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-      dividendAmount = nextDiv.amount;
-
       // If extrinsic < dividend, long call holder will exercise early to capture dividend
       if (extrinsicValue < nextDiv.amount && spot > strike) {
         dividendVsExtrinsic = nextDiv.amount / Math.max(extrinsicValue, 0.01);
@@ -94,7 +99,7 @@ export function assessAssignmentRisk(
       }
 
       // Risk increases as ex-div date approaches
-      if (daysToExDiv <= 3 && spot > strike) {
+      if (daysToExDiv != null && daysToExDiv <= 3 && spot > strike) {
         riskScore = Math.max(riskScore, 0.7);
         reasons.push(`Ex-div date in ${daysToExDiv} days and call is ITM: high assignment risk.`);
       }

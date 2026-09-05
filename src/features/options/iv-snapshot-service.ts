@@ -40,15 +40,21 @@ export async function captureIvSnapshot(
   // 30-day realized vol from historical
   const hv30 = computeRealizedVol(historical, 30);
 
+  // Truncate to UTC midnight. The @@unique([symbol, date]) constraint is on a
+  // DateTime column, so a timestamp with a time component would never match an
+  // existing row and the upsert would insert a duplicate on every run.
+  const day = startOfUtcDay(new Date());
+
   await prisma.ivSnapshot.upsert({
     where: {
       symbol_date: {
         symbol,
-        date: new Date(),
+        date: day,
       },
     },
     create: {
       symbol,
+      date: day,
       atmIv,
       iv30,
       iv60,
@@ -160,6 +166,11 @@ function findIvByDte(chain: OptionChain, targetDte: number): number | null {
   // Only use if within 50% of target DTE
   if (best && best.daysToExpiration > targetDte * 1.5) return null;
   return best?.impliedVolatility ?? null;
+}
+
+/** Normalize a timestamp to UTC midnight so one snapshot maps to one calendar day. */
+function startOfUtcDay(d: Date): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
 }
 
 function computeRealizedVol(prices: HistoricalPricePoint[], window: number): number | null {
