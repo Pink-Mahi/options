@@ -223,6 +223,13 @@ export function BacktestView() {
               within the cycle — if it never reaches your price, the order doesn&apos;t fill and your shares sit
               uncovered that cycle. Set to 0 to always sell at market.
             </p>
+            <p>
+              <strong className="text-foreground">Think of it like renting out a house:</strong> the
+              cost-basis floor sets the <em>terms</em> (never rent in a way that forces a sale below what you
+              paid) and the yield floor sets the <em>rent</em> (don&apos;t accept a tenant paying less than your
+              rate). If neither condition is met, you simply don&apos;t rent that month — you keep the house and
+              wait for a better offer.
+            </p>
           </div>
           <label className="mt-3 flex items-start gap-2 text-sm cursor-pointer">
             <input
