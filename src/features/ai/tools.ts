@@ -392,4 +392,17 @@ export const AI_TOOLS: AIToolDefinition[] = [
       required: ["spot", "volatility", "holdingDays", "signalScore", "costBps", "capital", "targetVol"],
     },
   },
+  {
+    name: "getStrategyAdvisor",
+    description:
+      "Run the Strategy Advisor on a stock: grades stock quality (A-F) based on trend, stability, growth, drawdown risk, and 15+ technical indicators. Scans available option chains across multiple DTEs (30/45/60/90/180) and recommends the best covered call to sell, with assignment probability, expire-worthless probability, premium yield, and total return if assigned. Returns a plain-English verdict (strong_buy/buy/caution/avoid) with explanation. Use this when the user asks 'should I buy this stock and sell calls on it?' or 'is this a good stock for the wheel?'",
+    parameters: {
+      type: "object",
+      properties: {
+        symbol: { type: "string", description: "Stock ticker symbol" },
+        contracts: { type: "number", description: "Number of contracts (default 1)" },
+      },
+      required: ["symbol"],
+    },
+  },
 ];

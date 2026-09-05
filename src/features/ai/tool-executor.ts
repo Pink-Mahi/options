@@ -26,6 +26,8 @@ import { getMarketRegimeSnapshot } from "@/features/market-data/regime-service";
 import { estimateExecution } from "@/lib/calculations/execution";
 import { runWalkForward, DEFAULT_WALK_FORWARD_CONFIG } from "@/lib/quant/walk-forward";
 import { computeCostAwareLevels, computeVolTargetSizing } from "@/lib/calculations/position-sizing";
+import { runStrategyAdvisor } from "@/lib/calculations/strategy-advisor";
+import { computeAllIndicators } from "@/lib/calculations/indicators";
 import { getCorporateEvents } from "@/features/market-data/service";
 import type { CashSecuredPutCandidate, CoveredCallCandidate, OptionType, ScannerObjective } from "@/lib/types";
 
@@ -98,6 +100,8 @@ export async function executeTool(
         return await execWalkForward(args);
       case "getPositionSizing":
         return execPositionSizing(args);
+      case "getStrategyAdvisor":
+        return await execStrategyAdvisor(args);
       case "searchStock":
         return { name, result: { note: "Search by exact symbol is supported via getQuote.", symbol: String(args.query ?? "").toUpperCase() }, warnings: [] };
       default:
@@ -1244,6 +1248,105 @@ function execPositionSizing(args: Record<string, unknown>): ToolExecutionResult 
     warnings: [
       "Entry/exit levels are derived from expected move bands and transaction costs, not AI-generated price targets.",
       "Volatility-targeted sizing assumes the input volatility is representative — regime shifts will change the optimal size.",
+    ],
+  };
+}
+
+async function execStrategyAdvisor(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  const symbol = str(args.symbol);
+  if (!symbol) {
+    return { name: "getStrategyAdvisor", result: null, warnings: ["symbol is required"], error: "missing_symbol" };
+  }
+
+  const contracts = num(args.contracts) ?? 1;
+
+  const [hist, quoteRes, expRes] = await Promise.all([
+    getHistoricalPrices({ symbol, range: "5y" as any }),
+    getQuote({ symbol }),
+    getExpirations({ symbol }),
+  ]);
+
+  const currentPrice = quoteRes.data.price;
+  const points = hist.data.points;
+
+  if (points.length < 60) {
+    return {
+      name: "getStrategyAdvisor",
+      result: { error: `Only ${points.length} bars available — need 60+ for strategy advisor.` },
+      warnings: [`Insufficient history for ${symbol}: ${points.length} bars.`],
+    };
+  }
+
+  const indicators = computeAllIndicators(points, symbol);
+  const technicalBias = indicators.summary.overallBias;
+  const technicalScore = indicators.signalScore.score;
+
+  const expirations = expRes.data ?? [];
+  const targetDTEs = [30, 45, 60, 90, 180];
+  const selectedExpirations: string[] = [];
+
+  for (const targetDTE of targetDTEs) {
+    let closest: typeof expirations[number] | null = null;
+    for (const exp of expirations) {
+      if (selectedExpirations.includes(exp.expirationDate)) continue;
+      if (closest == null || Math.abs(exp.daysToExpiration - targetDTE) < Math.abs(closest.daysToExpiration - targetDTE)) {
+        closest = exp;
+      }
+    }
+    if (closest) selectedExpirations.push(closest.expirationDate);
+  }
+
+  const chainResults = await Promise.all(
+    selectedExpirations.map(exp => getOptionChain({ symbol, expiration: exp }).catch(() => null)),
+  );
+
+  const chains = chainResults
+    .filter((c): c is NonNullable<typeof c> => c != null)
+    .map(c => c.data);
+
+  const r = runStrategyAdvisor(symbol, currentPrice, points, chains, technicalBias, technicalScore, contracts);
+
+  return {
+    name: "getStrategyAdvisor",
+    result: {
+      symbol: r.symbol,
+      currentPrice: r.currentPrice,
+      verdict: r.verdict,
+      verdictExplanation: r.verdictExplanation,
+      quality: {
+        grade: r.quality.grade,
+        total: r.quality.total,
+        components: r.quality.components,
+        strengths: r.quality.strengths,
+        concerns: r.quality.concerns,
+      },
+      bestPick: r.bestPick ? {
+        strike: r.bestPick.strike,
+        dte: r.bestPick.dte,
+        premiumPerShare: r.bestPick.premiumPerShare,
+        premiumYield: r.bestPick.premiumYield,
+        annualizedYield: r.bestPick.annualizedYield,
+        assignmentProbability: r.bestPick.assignmentProbability,
+        expireWorthlessProbability: r.bestPick.expireWorthlessProbability,
+        totalReturnIfAssigned: r.bestPick.totalReturnIfAssigned,
+        strategy: r.bestPick.strategy,
+        explanation: r.bestPick.explanation,
+      } : null,
+      recommendedDTE: r.recommendedDTE,
+      dteComparisons: r.dteComparisons.map(d => ({
+        dte: d.dte,
+        callsAnalyzed: d.callsAnalyzed,
+        avgPremiumYield: d.avgPremiumYield,
+        avgAssignmentProb: d.avgAssignmentProb,
+        bestStrike: d.bestCall?.strike ?? null,
+        bestYield: d.bestCall?.premiumYield ?? null,
+      })),
+      summary: r.summary,
+      warnings: r.warnings,
+    },
+    warnings: [
+      "Stock quality is based on historical data — past performance does not guarantee future results.",
+      "Assignment probability is estimated from delta — actual assignment depends on market conditions and holder behavior.",
     ],
   };
 }
