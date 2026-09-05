@@ -1,0 +1,270 @@
+// Prisma schema for the AI Options Income & Profit Calculator.
+// Canonical database: PostgreSQL.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Users & Auth
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  ADMIN
+  USER
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String?
+  name         String?
+  role         UserRole @default(USER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  portfolios Portfolio[]
+  sessions   Session[]
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Portfolio & Holdings
+// ---------------------------------------------------------------------------
+
+model Portfolio {
+  id        String   @id @default(cuid())
+  userId    String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  stockLots   StockLot[]
+  options     OptionPosition[]
+  goals       PortfolioGoal[]
+  savedScans  SavedScan[]
+  alerts      Alert[]
+  watchlist   Watchlist[]
+  transactions Transaction[]
+  aiChats     AiConversation[]
+
+  @@unique([userId])
+}
+
+model StockLot {
+  id                  String   @id @default(cuid())
+  portfolioId         String
+  symbol              String
+  shares              Decimal  @db.Decimal(18, 6)
+  purchaseDate        DateTime
+  costBasisPerShare   Decimal  @db.Decimal(18, 6)
+  brokerAccount       String?
+  notes               String?
+  protectedFromCalls  Boolean  @default(false)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  @@index([portfolioId, symbol])
+}
+
+enum OptionType {
+  CALL
+  PUT
+}
+
+enum StrategyType {
+  COVERED_CALL
+  CASH_SECURED_PUT
+  NAKED
+  LONG
+  WHEEL
+  OTHER
+}
+
+enum PositionStatus {
+  OPEN
+  EXPIRED_WORTHLESS
+  ASSIGNED
+  BOUGHT_BACK
+  ROLLED
+  CLOSED
+}
+
+model OptionPosition {
+  id                String         @id @default(cuid())
+  portfolioId       String
+  symbol            String
+  optionType        OptionType
+  strategyType      StrategyType
+  strike            Decimal        @db.Decimal(18, 6)
+  expiration        DateTime
+  contracts         Int
+  openingPrice      Decimal        @db.Decimal(18, 6)
+  openingCreditDebit Decimal       @db.Decimal(18, 6)
+  openDate          DateTime
+  currentPrice      Decimal?       @db.Decimal(18, 6)
+  status            PositionStatus @default(OPEN)
+  relatedStockLotIds String[]
+  assignmentStatus  String?
+  closeDate         DateTime?
+  closingPrice      Decimal?       @db.Decimal(18, 6)
+  realizedProfitLoss Decimal?      @db.Decimal(18, 6)
+  deltaAtEntry      Decimal?       @db.Decimal(10, 6)
+  ivAtEntry         Decimal?       @db.Decimal(10, 6)
+  dteAtEntry        Int?
+  reasonForTrade    String?
+  userGoal          String?
+  closingNotes      String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  @@index([portfolioId, symbol])
+  @@index([status, expiration])
+}
+
+model Transaction {
+  id          String   @id @default(cuid())
+  portfolioId String
+  symbol      String
+  type        String // OPEN, CLOSE, ROLL, ASSIGN, DIVIDEND, PREMIUM
+  amount      Decimal  @db.Decimal(18, 6)
+  shares      Decimal? @db.Decimal(18, 6)
+  price       Decimal? @db.Decimal(18, 6)
+  date        DateTime @default(now())
+  notes       String?
+  relatedOptionPositionId String?
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  @@index([portfolioId, date])
+}
+
+// ---------------------------------------------------------------------------
+// Goals, Scans, Alerts
+// ---------------------------------------------------------------------------
+
+model PortfolioGoal {
+  id                       String   @id @default(cuid())
+  portfolioId              String
+  symbol                   String? // null = portfolio-wide default
+  monthlyIncomeTarget      Decimal? @db.Decimal(18, 6)
+  annualIncomeTarget       Decimal? @db.Decimal(18, 6)
+  annualTotalReturnTarget  Decimal?
+  minimumOTMPercent        Decimal?
+  maximumDelta             Decimal?
+  preferredDteMin          Int?
+  preferredDteMax          Int?
+  minimumPremiumYield      Decimal?
+  maximumAssignmentProbability Decimal?
+  minimumSharesUncovered   Int?
+  earningsPreference       String? // exclude, warn, include
+  dividendPreference       String? // exclude, warn, include
+  riskProfile              String? // conservative, balanced, income, max_total_return, leaps, put_entry
+  strategyPreference       String?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  @@index([portfolioId, symbol])
+}
+
+model SavedScan {
+  id          String   @id @default(cuid())
+  portfolioId String
+  name        String
+  description String?
+  scanType    String   // covered_call, cash_secured_put, leaps
+  filters     Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  @@index([portfolioId])
+}
+
+model Alert {
+  id          String   @id @default(cuid())
+  portfolioId String
+  symbol      String?
+  ruleType    String
+  parameters  Json
+  enabled     Boolean  @default(true)
+  lastFiredAt DateTime?
+  createdAt   DateTime @default(now())
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  @@index([portfolioId])
+}
+
+model Watchlist {
+  id          String   @id @default(cuid())
+  portfolioId String
+  symbol      String
+  notes       String?
+  targetPrice Decimal?
+  targetIv    Decimal?
+  targetYield Decimal?
+  createdAt   DateTime @default(now())
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  @@unique([portfolioId, symbol])
+  @@index([portfolioId])
+}
+
+// ---------------------------------------------------------------------------
+// AI Conversations (Phase 5 — schema ready, not yet active)
+// ---------------------------------------------------------------------------
+
+model AiConversation {
+  id          String   @id @default(cuid())
+  portfolioId String
+  messages    Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  @@index([portfolioId])
+}
+
+// ---------------------------------------------------------------------------
+// Market Data Cache
+// ---------------------------------------------------------------------------
+
+model MarketDataCache {
+  id        String   @id @default(cuid())
+  cacheKey  String   @unique
+  kind      String   // quote, expirations, option_chain, historical, events
+  symbol    String?
+  payload   Json
+  fetchedAt DateTime @default(now())
+  expiresAt DateTime
+
+  @@index([kind, symbol])
+  @@index([expiresAt])
+}
