@@ -6,7 +6,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - DATABASE_URL=${DATABASE_URL:-postgresql://opc:opc_dev_password@db:5432/opc?schema=public}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://opc:opc_dev_password@localhost:5432/opc?schema=public}
       - MARKET_DATA_PROVIDER=${MARKET_DATA_PROVIDER:-tradier}
       - MARKET_DATA_API_KEY=${MARKET_DATA_API_KEY}
       - TRADIER_BASE_URL=${TRADIER_BASE_URL:-https://api.tradier.com/v1}
