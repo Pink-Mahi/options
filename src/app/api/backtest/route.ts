@@ -47,7 +47,10 @@ export async function POST(req: Request) {
     const spot = quote.data.price;
     const contracts = Number(body.contracts) > 0 ? Number(body.contracts) : 1;
     const shares = strategy === "CASH_SECURED_PUT" ? 0 : contracts * 100;
-    const startingCapital = Math.max(spot * contracts * 100, 1);
+    const startingCapital =
+      Number(body.startingCapital) > 0
+        ? Number(body.startingCapital)
+        : Math.max(spot * contracts * 100, 1);
 
     const result = runBacktest(hist.data.points, {
       strategy,
@@ -55,7 +58,7 @@ export async function POST(req: Request) {
       deltaTarget: Number(body.deltaTarget) > 0 ? Number(body.deltaTarget) : 0.3,
       dteTarget: Number(body.dteTarget) > 0 ? Number(body.dteTarget) : 45,
       contracts,
-      riskFreeRate: 0.05,
+      riskFreeRate: Number(body.riskFreeRate) > 0 ? Number(body.riskFreeRate) : 0.05,
       startingCapital,
       shares,
       strikeInterval: spot >= 200 ? 5 : spot >= 50 ? 2.5 : 1,

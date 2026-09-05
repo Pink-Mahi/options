@@ -42,6 +42,8 @@ export function BacktestView() {
   const [minYieldPct, setMinYieldPct] = useState(0);
   const [contracts, setContracts] = useState(1);
   const [averageDown, setAverageDown] = useState(false);
+  const [fillAssumption, setFillAssumption] = useState<"bid" | "mid">("bid");
+  const [startingCapital, setStartingCapital] = useState(0);
   const [result, setResult] = useState<BacktestResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +65,8 @@ export function BacktestView() {
           minCallPremiumYieldPct: minYieldPct > 0 ? minYieldPct / 100 : undefined,
           contracts,
           averageDownWithPremium: averageDown,
+          fillAssumption,
+          startingCapital: startingCapital > 0 ? startingCapital : undefined,
         }),
         cache: "no-store",
       });
@@ -119,7 +123,7 @@ export function BacktestView() {
           <CardDescription>Strikes are chosen each cycle by closest match to the delta target.</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
+          <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-4">
             <div className="space-y-1.5">
               <Label htmlFor="bt-symbol">Symbol</Label>
               <Input
@@ -194,6 +198,30 @@ export function BacktestView() {
               />
             </div>
             <div className="space-y-1.5">
+              <Label htmlFor="bt-fill">Fill price</Label>
+              <select
+                id="bt-fill"
+                className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm"
+                value={fillAssumption}
+                onChange={(e) => setFillAssumption(e.target.value as "bid" | "mid")}
+              >
+                <option value="bid">Bid (conservative)</option>
+                <option value="mid">Mid (optimistic)</option>
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="bt-capital">Starting capital</Label>
+              <Input
+                id="bt-capital"
+                type="number"
+                step="1000"
+                min="0"
+                value={startingCapital || ""}
+                onChange={(e) => setStartingCapital(Number(e.target.value))}
+                placeholder="Auto"
+              />
+            </div>
+            <div className="space-y-1.5">
               <Label htmlFor="bt-range">History</Label>
               <select
                 id="bt-range"
@@ -251,6 +279,12 @@ export function BacktestView() {
               drops below your cost basis, accumulated premium buys extra 100-share lots. Each lot lowers your
               average cost basis — so your strike floor drops too, and each extra 100 shares means one more
               call contract you can sell next cycle.
+            </p>
+            <p>
+              <strong className="text-foreground">Fill price:</strong> <em>Bid</em> assumes you sell 5% below
+              the modeled mid (realistic for marketable orders). <em>Mid</em> assumes perfect fills —
+              optimistic. <strong className="text-foreground">Starting capital</strong> sets the buy &amp;
+              hold comparison baseline; leave blank to auto-size it to the position (spot × contracts × 100).
             </p>
           </div>
           <label className="mt-3 flex items-start gap-2 text-sm cursor-pointer">
