@@ -58,6 +58,6 @@ echo "PostgreSQL is ready."
 echo "Running Prisma migrations..."
 npx prisma db push --skip-generate
 
-# Start Next.js
-echo "Starting Next.js..."
-exec pnpm start
+# Start Next.js on the container port (package.json's start script pins 3001 for local dev)
+echo "Starting Next.js on port ${PORT:-3000}..."
+exec npx next start -p "${PORT:-3000}" -H "${HOSTNAME:-0.0.0.0}"
