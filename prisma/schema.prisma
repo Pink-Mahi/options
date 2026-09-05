@@ -268,3 +268,67 @@ model MarketDataCache {
   @@index([kind, symbol])
   @@index([expiresAt])
 }
+
+// ---------------------------------------------------------------------------
+// Predictions & Scorecard (Phase 13)
+// ---------------------------------------------------------------------------
+
+model Prediction {
+  id            String   @id @default(cuid())
+  symbol        String
+  predictionDate DateTime @default(now())
+  targetDate    DateTime
+  horizonDays   Int
+  direction     String   // bullish, bearish, neutral
+  confidence    Decimal  @db.Decimal(5, 4) // 0-1
+  expectedMove  Decimal? @db.Decimal(10, 6) // fractional expected move
+  actualMove    Decimal? @db.Decimal(10, 6) // filled when scored
+  actualDirection String? // bullish, bearish, neutral — filled when scored
+  hit           Boolean? // true if direction matched
+  brierScore    Decimal? @db.Decimal(10, 8) // lower = better
+  scoredAt      DateTime?
+  source        String   // ai_pattern, ai_chat, technical
+  metadata      Json?    // additional context (indicators, price at prediction, etc.)
+
+  @@index([symbol, predictionDate])
+  @@index([scoredAt])
+}
+
+// ---------------------------------------------------------------------------
+// IV History Snapshots (Phase 13)
+// ---------------------------------------------------------------------------
+
+model IvSnapshot {
+  id        String   @id @default(cuid())
+  symbol    String
+  date      DateTime @default(now())
+  atmIv     Decimal  @db.Decimal(10, 6)
+  iv30      Decimal? @db.Decimal(10, 6)
+  iv60      Decimal? @db.Decimal(10, 6)
+  iv90      Decimal? @db.Decimal(10, 6)
+  hv30      Decimal? @db.Decimal(10, 6)
+  spot      Decimal  @db.Decimal(18, 6)
+
+  @@unique([symbol, date])
+  @@index([symbol, date])
+}
+
+// ---------------------------------------------------------------------------
+// Notification Log (Phase 13 — alert delivery)
+// ---------------------------------------------------------------------------
+
+model NotificationLog {
+  id          String   @id @default(cuid())
+  alertId     String?
+  userId      String
+  symbol      String?
+  ruleType    String
+  message     String
+  channel     String   // in_app, email, webhook
+  status      String   @default("sent") // sent, failed, skipped
+  sentAt      DateTime @default(now())
+  metadata    Json?
+
+  @@index([userId, sentAt])
+  @@index([alertId])
+}
