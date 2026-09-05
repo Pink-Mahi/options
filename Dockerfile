@@ -29,9 +29,10 @@ FROM node:22-alpine AS runner
 
 WORKDIR /app
 
-RUN apk add --no-cache openssl && corepack enable && corepack prepare pnpm@10 --activate
+RUN apk add --no-cache openssl postgresql16 postgresql16-client && corepack enable && corepack prepare pnpm@10 --activate
 
 ENV NODE_ENV=production
+ENV DATABASE_URL=postgresql://opc:opc_dev_password@localhost:5432/opc?schema=public
 
 # Copy only what we need
 COPY --from=builder /app/package.json ./
@@ -41,10 +42,13 @@ COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules ./node_modules
 
+# Copy startup script
+COPY start.sh ./
+RUN chmod +x start.sh
+
 EXPOSE 3000
 
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
-# Run migrations on startup, then start the server
-CMD npx prisma db push --skip-generate && pnpm start
+CMD ["./start.sh"]
