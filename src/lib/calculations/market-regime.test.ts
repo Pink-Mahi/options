@@ -61,12 +61,12 @@ describe("classifyMarketRegime", () => {
   it("provides strategy implications", () => {
     const prices = generateUptrendPrices(300, 250);
     const result = classifyMarketRegime(12, prices);
-    expect(result.strategyImplications.length).toBeGreaterThan(0);
+    expect(result.strategyImplications.length).toBe(3);
   });
 
   it("computes realized volatility", () => {
     const prices = generateUptrendPrices(300, 250);
     const result = classifyMarketRegime(12, prices);
-    expect(result.realizedVol30).toBeGreaterThanOrEqual(0);
+    expect(result.realizedVol30).toBeCloseTo(0.0237, 3);
   });
 });

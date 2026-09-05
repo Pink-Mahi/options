@@ -55,8 +55,10 @@ describe("buildWheelSummary", () => {
 
   it("estimates annualized income", () => {
     const summary = buildWheelSummary(cycles)!;
-    expect(summary.annualizedIncomeEstimate).toBeGreaterThan(0);
-    expect(summary.cyclesPerYearEstimate).toBeGreaterThan(0);
+    expect(summary.annualizedIncomeEstimate).toBeCloseTo(2488.64, 1);
+    expect(summary.cyclesPerYearEstimate).toBeCloseTo(12.44, 2);
+    expect(summary.avgPremiumPerCycle).toBe(200);
+    expect(summary.avgCycleDays).toBeCloseTo(29.33, 2);
   });
 
   it("returns null for empty cycles", () => {

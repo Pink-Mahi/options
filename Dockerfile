@@ -46,6 +46,10 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY start.sh ./
 RUN chmod +x start.sh
 
+# Persist PostgreSQL data across container rebuilds.
+# Coolify will mount a named volume here automatically when it sees this directive.
+VOLUME /var/lib/postgresql/data
+
 EXPOSE 3000
 
 ENV PORT=3000

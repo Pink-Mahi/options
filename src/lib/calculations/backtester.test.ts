@@ -42,9 +42,10 @@ describe("runBacktest - covered call", () => {
       fillAssumption: "mid",
     });
 
-    expect(result.trades.length).toBeGreaterThan(0);
-    expect(result.totalPremiumIncome).toBeGreaterThan(0);
-    expect(result.equityCurve.length).toBeGreaterThan(0);
+    expect(result.trades.length).toBe(13);
+    expect(result.totalPremiumIncome).toBeCloseTo(601.41, 1);
+    expect(result.equityCurve.length).toBe(13);
+    expect(result.totalCycles).toBe(13);
   });
 
   it("produces valid win rate", () => {
@@ -62,8 +63,9 @@ describe("runBacktest - covered call", () => {
       fillAssumption: "mid",
     });
 
-    expect(result.winRate).toBeGreaterThanOrEqual(0);
-    expect(result.winRate).toBeLessThanOrEqual(1);
+    expect(result.winRate).toBeCloseTo(0.846, 2);
+    expect(result.expiredWorthlessCount).toBe(11);
+    expect(result.calledAwayCount).toBe(2);
     expect(result.expiredWorthlessCount + result.calledAwayCount).toBe(result.totalCycles);
   });
 
@@ -82,7 +84,9 @@ describe("runBacktest - covered call", () => {
       fillAssumption: "mid",
     });
 
-    expect(result.buyHoldReturn).toBeGreaterThan(0); // uptrend
+    expect(result.buyHoldReturn).toBeCloseTo(0.188, 2);
+    expect(result.strategyReturn).toBeCloseTo(0.171, 2);
+    expect(result.outperformance).toBeCloseTo(-0.017, 2);
   });
 });
 
@@ -102,8 +106,11 @@ describe("runBacktest - cash secured put", () => {
       fillAssumption: "mid",
     });
 
-    expect(result.trades.length).toBeGreaterThan(0);
-    expect(result.totalPremiumIncome).toBeGreaterThan(0);
+    expect(result.trades.length).toBe(9);
+    expect(result.totalPremiumIncome).toBeCloseTo(527.76, 1);
+    expect(result.totalCycles).toBe(9);
+    expect(result.assignmentCount).toBe(5);
+    expect(result.expiredWorthlessCount).toBe(4);
     expect(result.assignmentCount + result.expiredWorthlessCount).toBe(result.totalCycles);
   });
 });
@@ -127,6 +134,7 @@ describe("runBacktest - wheel", () => {
     // Should have both puts and calls
     const hasPuts = result.trades.some((t) => t.optionType === "PUT");
     const hasCalls = result.trades.some((t) => t.optionType === "CALL");
+    expect(result.trades.length).toBe(23);
     expect(hasPuts).toBe(true);
     expect(hasCalls).toBe(true);
   });
@@ -148,7 +156,7 @@ describe("runBacktest - edge cases", () => {
       fillAssumption: "mid",
     });
 
-    expect(result.warnings.length).toBeGreaterThan(0);
+    expect(result.warnings).toEqual(["Insufficient historical data for backtesting (need 60+ trading days)."]);
   });
 
   it("computes outperformance", () => {
@@ -166,6 +174,7 @@ describe("runBacktest - edge cases", () => {
       fillAssumption: "mid",
     });
 
+    expect(result.buyHoldReturn).toBeCloseTo(0.188, 2);
     expect(result.outperformance).toBe(result.strategyReturn - result.buyHoldReturn);
   });
 
@@ -184,6 +193,7 @@ describe("runBacktest - edge cases", () => {
       fillAssumption: "mid",
     });
 
+    expect(result.maxDrawdown).toBeCloseTo(0.145, 2);
     expect(result.maxDrawdown).toBeGreaterThanOrEqual(0);
     expect(result.maxDrawdown).toBeLessThanOrEqual(1);
   });

@@ -355,4 +355,41 @@ export const AI_TOOLS: AIToolDefinition[] = [
       required: ["bid", "ask", "orderSize", "orderType"],
     },
   },
+  {
+    name: "runWalkForward",
+    description:
+      "Run walk-forward out-of-sample signal validation on a symbol's historical prices. Extracts point-in-time factors (momentum, trend, mean reversion, volatility), sweeps candidate weight vectors on each training fold, selects the best on train only, and applies it to the test fold. Reports stitched OOS returns, Deflated Sharpe Ratio (corrects for multiple testing), Sharpe degradation (overfitting diagnostic), buy-and-hold comparison, and an equity curve. Use this to honestly evaluate whether a factor-based signal has real out-of-sample edge or is just curve-fitted noise.",
+    parameters: {
+      type: "object",
+      properties: {
+        symbol: { type: "string" },
+        range: { type: "string", description: "History window: 3y, 5y, 10y, or max (default 10y)" },
+        folds: { type: "number", description: "Number of train/test folds, 2-8 (default 4)" },
+        costBps: { type: "number", description: "Round-trip transaction cost in basis points (default 10)" },
+        signalThreshold: { type: "number", description: "Score above which the model goes long (default 0.1)" },
+      },
+      required: ["symbol"],
+    },
+  },
+  {
+    name: "getPositionSizing",
+    description:
+      "Compute cost-aware entry/exit levels and volatility-targeted position sizing. Given a signal score, volatility, and capital, returns: entry price (cost-adjusted), stop-loss, take-profit (from expected move bands), risk-reward ratio, breakeven after costs, and the number of shares/contracts to hold to hit a target volatility contribution with Kelly and leverage caps. Use this to translate a signal into actionable, risk-managed trade levels.",
+    parameters: {
+      type: "object",
+      properties: {
+        spot: { type: "number", description: "Current underlying price" },
+        volatility: { type: "number", description: "Annualized volatility (decimal, e.g. 0.30)" },
+        holdingDays: { type: "number", description: "Planned holding period in days" },
+        signalScore: { type: "number", description: "Signal score in [-1, 1]. Positive = long, negative = short" },
+        costBps: { type: "number", description: "Round-trip cost as fraction (e.g. 0.001 = 10bps)" },
+        capital: { type: "number", description: "Portfolio capital in dollars" },
+        targetVol: { type: "number", description: "Target annualized vol contribution (e.g. 0.15)" },
+        maxLeverage: { type: "number", description: "Max leverage (default 2.0)" },
+        kellyFraction: { type: "number", description: "Kelly fraction cap (default 0.25)" },
+        expectedReturn: { type: "number", description: "Expected annual return for Kelly (optional)" },
+      },
+      required: ["spot", "volatility", "holdingDays", "signalScore", "costBps", "capital", "targetVol"],
+    },
+  },
 ];

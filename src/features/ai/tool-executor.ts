@@ -24,6 +24,8 @@ import { assessAssignmentRisk } from "@/lib/calculations/assignment-risk";
 import { computeBetaWeightedDelta, type PositionDelta } from "@/lib/calculations/beta-risk";
 import { getMarketRegimeSnapshot } from "@/features/market-data/regime-service";
 import { estimateExecution } from "@/lib/calculations/execution";
+import { runWalkForward, DEFAULT_WALK_FORWARD_CONFIG } from "@/lib/quant/walk-forward";
+import { computeCostAwareLevels, computeVolTargetSizing } from "@/lib/calculations/position-sizing";
 import { getCorporateEvents } from "@/features/market-data/service";
 import type { CashSecuredPutCandidate, CoveredCallCandidate, OptionType, ScannerObjective } from "@/lib/types";
 
@@ -92,6 +94,10 @@ export async function executeTool(
         return await execMarketRegime();
       case "estimateExecution":
         return execEstimateExecution(args);
+      case "runWalkForward":
+        return await execWalkForward(args);
+      case "getPositionSizing":
+        return execPositionSizing(args);
       case "searchStock":
         return { name, result: { note: "Search by exact symbol is supported via getQuote.", symbol: String(args.query ?? "").toUpperCase() }, warnings: [] };
       default:
@@ -1109,4 +1115,135 @@ function pct(x: number | null): number | null {
 }
 function round(x: number): number {
   return Math.round(x * 100) / 100;
+}
+
+async function execWalkForward(args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  const symbol = str(args.symbol);
+  if (!symbol) {
+    return { name: "runWalkForward", result: null, warnings: ["symbol is required"], error: "missing_symbol" };
+  }
+
+  const range = String(args.range ?? "10y").toLowerCase();
+  const validRanges = ["3y", "5y", "10y", "max"];
+  const histRange = validRanges.includes(range) ? range : "10y";
+
+  const hist = await getHistoricalPrices({ symbol, range: histRange as any });
+
+  if (hist.data.points.length < 300) {
+    return {
+      name: "runWalkForward",
+      result: { error: `Only ${hist.data.points.length} bars available — need 300+ for walk-forward validation.` },
+      warnings: [`Insufficient history for ${symbol}: ${hist.data.points.length} bars.`],
+    };
+  }
+
+  const config = {
+    ...DEFAULT_WALK_FORWARD_CONFIG,
+    folds: Math.min(Math.max(Number(args.folds) || 4, 2), 8),
+    costBps: Number(args.costBps) >= 0 ? Number(args.costBps) : DEFAULT_WALK_FORWARD_CONFIG.costBps,
+    signalThreshold: Number(args.signalThreshold) > 0 ? Number(args.signalThreshold) : DEFAULT_WALK_FORWARD_CONFIG.signalThreshold,
+  };
+
+  const r = runWalkForward(hist.data.points, symbol, config);
+
+  return {
+    name: "runWalkForward",
+    result: {
+      symbol: r.symbol,
+      folds: r.folds.length,
+      candidatesPerFold: r.candidatesPerFold,
+      totalTrials: r.totalTrials,
+      oosSharpe: r.oosSharpe != null ? round(r.oosSharpe) : null,
+      oosSortino: r.oosSortino != null ? round(r.oosSortino) : null,
+      oosTotalReturn: pct(r.oosTotalReturn),
+      oosMaxDrawdown: pct(r.oosMaxDrawdown),
+      oosHitRate: pct(r.oosHitRate),
+      oosTimeInMarket: pct(r.oosTimeInMarket),
+      totalTrades: r.totalTrades,
+      meanTrainSharpe: r.meanTrainSharpe != null ? round(r.meanTrainSharpe) : null,
+      sharpeDegradation: r.sharpeDegradation != null ? round(r.sharpeDegradation) : null,
+      deflatedSharpe: r.deflated.deflatedSharpe != null ? round(r.deflated.deflatedSharpe) : null,
+      deflatedVerdict: r.deflated.verdict,
+      deflatedTrials: r.deflated.trials,
+      buyHoldReturn: pct(r.buyHoldReturn),
+      buyHoldSharpe: r.buyHoldSharpe != null ? round(r.buyHoldSharpe) : null,
+      excessReturn: pct(r.excessReturn),
+      warnings: r.warnings,
+    },
+    warnings: [
+      "Signal weights are selected on training folds and frozen for OOS testing. The Deflated Sharpe Ratio corrects for multiple testing.",
+      "Past performance does not predict future results — these factors are well-known and heavily arbitraged.",
+    ],
+  };
+}
+
+function execPositionSizing(args: Record<string, unknown>): ToolExecutionResult {
+  const spot = num(args.spot);
+  const volatility = num(args.volatility);
+  const holdingDays = num(args.holdingDays);
+  const signalScore = num(args.signalScore);
+  const costBps = num(args.costBps);
+  const capital = num(args.capital);
+  const targetVol = num(args.targetVol);
+
+  if (spot == null || volatility == null || holdingDays == null || signalScore == null || costBps == null) {
+    return { name: "getPositionSizing", result: null, warnings: ["Missing required parameters for entry/exit levels"], error: "missing_params" };
+  }
+
+  const levels = computeCostAwareLevels({
+    spot,
+    volatility,
+    holdingDays,
+    signalScore,
+    costBps,
+    stopMultiplier: num(args.stopMultiplier) ?? undefined,
+    targetMultiplier: num(args.targetMultiplier) ?? undefined,
+  });
+
+  let sizing = null;
+  if (capital != null && targetVol != null) {
+    sizing = computeVolTargetSizing({
+      capital,
+      assetVol: volatility,
+      targetVol,
+      price: spot,
+      maxLeverage: num(args.maxLeverage) ?? undefined,
+      kellyFraction: num(args.kellyFraction) ?? undefined,
+      expectedReturn: num(args.expectedReturn) ?? undefined,
+    });
+  }
+
+  return {
+    name: "getPositionSizing",
+    result: {
+      levels: {
+        direction: levels.direction,
+        entryPrice: levels.entryPrice,
+        stopLoss: levels.stopLoss,
+        takeProfit: levels.takeProfit,
+        expectedMove: levels.expectedMove,
+        expectedMovePct: pct(levels.expectedMovePct),
+        riskPerShare: levels.riskPerShare,
+        rewardPerShare: levels.rewardPerShare,
+        riskRewardRatio: levels.riskRewardRatio,
+        breakevenMove: levels.breakevenMove,
+        costDragPct: pct(levels.costDragPct),
+      },
+      sizing: sizing ? {
+        weight: sizing.weight,
+        units: sizing.units,
+        positionValue: sizing.positionValue,
+        leverage: sizing.leverage,
+        actualVolContribution: pct(sizing.actualVolContribution),
+        kellyWeight: Number.isFinite(sizing.kellyWeight) ? sizing.kellyWeight : null,
+        kellyCapped: sizing.kellyCapped,
+        leverageCapped: sizing.leverageCapped,
+        warnings: sizing.warnings,
+      } : null,
+    },
+    warnings: [
+      "Entry/exit levels are derived from expected move bands and transaction costs, not AI-generated price targets.",
+      "Volatility-targeted sizing assumes the input volatility is representative — regime shifts will change the optimal size.",
+    ],
+  };
 }

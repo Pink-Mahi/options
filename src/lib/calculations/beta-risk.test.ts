@@ -53,8 +53,10 @@ describe("computeBetaWeightedDelta", () => {
     ];
     const result = computeBetaWeightedDelta(positions, 500);
     expect(result.concentrationRisk.riskLevel).toBe("highly_concentrated");
-    expect(result.concentrationRisk.maxSinglePosition).toBeGreaterThan(0.40);
-    expect(result.concentrationRisk.warnings.length).toBeGreaterThan(0);
+    expect(result.concentrationRisk.maxSinglePosition).toBeCloseTo(0.9, 2);
+    expect(result.concentrationRisk.warnings.length).toBe(2);
+    expect(result.concentrationRisk.warnings[0]).toContain("exceeds 40%");
+    expect(result.concentrationRisk.warnings[1]).toContain("exceed 80%");
   });
 
   it("flags diversified portfolio", () => {
