@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button, Input, Label } from "@/components/ui";
 
-export function SetupForm({ error }: { error?: string }) {
+export default function SetupPage({ error }: { error?: string }) {
   const router = useRouter();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -115,8 +115,4 @@ export function SetupForm({ error }: { error?: string }) {
       </Card>
     </div>
   );
-}
-
-export default function SetupPage() {
-  return <SetupForm />;
 }
