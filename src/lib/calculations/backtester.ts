@@ -56,6 +56,12 @@ export interface BacktestConfig {
    * yield meets this floor. Unfilled cycles are recorded as NO_FILL.
    */
   minCallPremiumYieldPct?: number;
+  /**
+   * When true, accumulated premium is reinvested into 100-share lots whenever
+   * the stock trades below the current cost basis — averaging the basis down so
+   * future calls can be sold at lower strikes without violating the floor.
+   */
+  averageDownWithPremium?: boolean;
 }
 
 export interface BacktestTrade {
@@ -112,6 +118,14 @@ export interface BacktestResult {
   callFillRate: number;
   /** Average premium yield across filled call trades */
   avgCallPremiumYield: number;
+  /** Extra 100-share lots bought by reinvesting premium below cost basis */
+  averagedDownLots: number;
+  /** Total premium dollars reinvested into share purchases */
+  reinvestedPremium: number;
+  /** Shares held at the end of the backtest */
+  endingShares: number;
+  /** Cost basis of held shares at the end (null if no shares held) */
+  endingCostBasis: number | null;
   warnings: string[];
 }
 
@@ -278,6 +292,10 @@ export function runBacktest(
   let noFillCount = 0;
   let callCycleCount = 0;
   let callPremiumYieldSum = 0;
+  /** Spendable premium cash (gross collected minus reinvested) */
+  let premiumCash = 0;
+  let averagedDownLots = 0;
+  let reinvestedPremium = 0;
 
   const firstPrice = prices[0];
   const lastPrice = prices[prices.length - 1];
@@ -308,6 +326,10 @@ export function runBacktest(
       noFillCount: 0,
       callFillRate: 1,
       avgCallPremiumYield: 0,
+      averagedDownLots: 0,
+      reinvestedPremium: 0,
+      endingShares: 0,
+      endingCostBasis: null,
       warnings: ["No price data available."],
     };
   }
@@ -346,6 +368,31 @@ export function runBacktest(
     if (optionType === "CALL" && shareCostBasis == null) {
       shareCostBasis = spot;
     }
+
+    // --- Reinvest premium to average down ---------------------------------
+    // When the stock trades below our cost basis, spend accumulated premium on
+    // 100-share lots. Each lot lowers the weighted-average basis, which lowers
+    // the floor for future call sales and adds another sellable contract.
+    if (
+      config.averageDownWithPremium &&
+      sharesHeld > 0 &&
+      shareCostBasis != null &&
+      spot < shareCostBasis
+    ) {
+      while (premiumCash >= spot * 100) {
+        shareCostBasis =
+          (shareCostBasis * sharesHeld + spot * 100) / (sharesHeld + 100);
+        sharesHeld += 100;
+        premiumCash -= spot * 100;
+        reinvestedPremium += spot * 100;
+        averagedDownLots++;
+      }
+    }
+
+    // Calls are sold one contract per 100 shares held; puts stay at the
+    // configured contract count.
+    const activeContracts =
+      optionType === "CALL" ? Math.max(1, Math.floor(sharesHeld / 100)) : config.contracts;
 
     // Cost-basis floor: never sell a call below what we paid for the shares.
     const minCallStrike =
@@ -427,8 +474,9 @@ export function runBacktest(
     const fillPrice = filled
       ? config.fillAssumption === "bid" ? premium * 0.95 : premium
       : 0;
-    const premiumIncome = fillPrice * 100 * config.contracts;
+    const premiumIncome = fillPrice * 100 * activeContracts;
     cashFromPremium += premiumIncome;
+    premiumCash += premiumIncome;
     const premiumYield = filled && openSpot > 0 ? fillPrice / openSpot : 0;
     if (optionType === "CALL") {
       callCycleCount++;
@@ -495,7 +543,7 @@ export function runBacktest(
       optionType,
       strike,
       premiumPerShare: fillPrice,
-      contracts: config.contracts,
+      contracts: activeContracts,
       premiumIncome,
       outcome,
       stockPriceAtOpen: openSpot,
@@ -569,6 +617,10 @@ export function runBacktest(
     callFillRate: callCycleCount > 0 ? (callCycleCount - noFillCount) / callCycleCount : 1,
     avgCallPremiumYield:
       callCycleCount - noFillCount > 0 ? callPremiumYieldSum / (callCycleCount - noFillCount) : 0,
+    averagedDownLots,
+    reinvestedPremium,
+    endingShares: sharesHeld,
+    endingCostBasis: shareCostBasis,
     warnings,
   };
 }

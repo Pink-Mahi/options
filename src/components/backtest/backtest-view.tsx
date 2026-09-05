@@ -40,6 +40,8 @@ export function BacktestView() {
   const [range, setRange] = useState("3y");
   const [neverBelowCost, setNeverBelowCost] = useState(true);
   const [minYieldPct, setMinYieldPct] = useState(0);
+  const [contracts, setContracts] = useState(1);
+  const [averageDown, setAverageDown] = useState(false);
   const [result, setResult] = useState<BacktestResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +61,8 @@ export function BacktestView() {
           range,
           neverSellCallBelowCostBasis: neverBelowCost,
           minCallPremiumYieldPct: minYieldPct > 0 ? minYieldPct / 100 : undefined,
+          contracts,
+          averageDownWithPremium: averageDown,
         }),
         cache: "no-store",
       });
@@ -165,6 +169,18 @@ export function BacktestView() {
               />
             </div>
             <div className="space-y-1.5">
+              <Label htmlFor="bt-contracts">Contracts</Label>
+              <Input
+                id="bt-contracts"
+                type="number"
+                step="1"
+                min="1"
+                max="50"
+                value={contracts}
+                onChange={(e) => setContracts(Math.max(1, Number(e.target.value)))}
+              />
+            </div>
+            <div className="space-y-1.5">
               <Label htmlFor="bt-minyield">Min call yield %</Label>
               <Input
                 id="bt-minyield"
@@ -230,6 +246,12 @@ export function BacktestView() {
               rate). If neither condition is met, you simply don&apos;t rent that month — you keep the house and
               wait for a better offer.
             </p>
+            <p>
+              <strong className="text-foreground">Reinvest premium to average down:</strong> when the stock
+              drops below your cost basis, accumulated premium buys extra 100-share lots. Each lot lowers your
+              average cost basis — so your strike floor drops too, and each extra 100 shares means one more
+              call contract you can sell next cycle.
+            </p>
           </div>
           <label className="mt-3 flex items-start gap-2 text-sm cursor-pointer">
             <input
@@ -243,6 +265,21 @@ export function BacktestView() {
               <span className="text-muted-foreground">
                 If a put is assigned at $300, later covered calls are only sold at strikes of $300 or higher —
                 so you can&apos;t be called away at a loss. Premiums may be tiny while the stock is underwater.
+              </span>
+            </span>
+          </label>
+          <label className="mt-2 flex items-start gap-2 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={averageDown}
+              onChange={(e) => setAverageDown(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-input"
+            />
+            <span>
+              <strong>Reinvest premium to average down.</strong>{" "}
+              <span className="text-muted-foreground">
+                When the stock is below your cost basis, spend collected premium on 100-share lots — lowering
+                your floor and increasing the number of calls you can sell.
               </span>
             </span>
           </label>
@@ -303,6 +340,18 @@ export function BacktestView() {
               <Stat
                 label="Avg call yield"
                 value={formatPercent(result.avgCallPremiumYield, 2)}
+              />
+            )}
+            {result.averagedDownLots > 0 && (
+              <Stat
+                label="Lots bought (avg down)"
+                value={`${result.averagedDownLots} (${formatCurrency(result.reinvestedPremium, 0)})`}
+              />
+            )}
+            {result.endingCostBasis != null && result.averagedDownLots > 0 && (
+              <Stat
+                label="Ending cost basis"
+                value={`${formatCurrency(result.endingCostBasis, 2)} × ${result.endingShares} sh`}
               />
             )}
             <Stat label="Expired worthless" value={formatPercent(result.winRate)} />
@@ -376,6 +425,16 @@ export function BacktestView() {
                 )}
                 {result.avgCallPremiumYield > 0 && (
                   <Row label="Avg call yield / cycle" value={formatPercent(result.avgCallPremiumYield, 2)} />
+                )}
+                {result.averagedDownLots > 0 && (
+                  <>
+                    <Row label="Lots bought (avg down)" value={String(result.averagedDownLots)} />
+                    <Row label="Premium reinvested" value={formatCurrency(result.reinvestedPremium, 0)} />
+                    <Row label="Ending shares" value={String(result.endingShares)} />
+                    {result.endingCostBasis != null && (
+                      <Row label="Ending cost basis" value={formatCurrency(result.endingCostBasis, 2)} />
+                    )}
+                  </>
                 )}
               </CardContent>
             </Card>

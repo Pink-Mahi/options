@@ -257,6 +257,68 @@ describe("runBacktest - GTC min yield floor", () => {
   });
 });
 
+describe("runBacktest - reinvest premium to average down", () => {
+  const baseConfig = {
+    strategy: "COVERED_CALL" as const,
+    symbol: "TEST",
+    deltaTarget: 0.30,
+    dteTarget: 30,
+    contracts: 1,
+    riskFreeRate: 0.05,
+    startingCapital: 10000,
+    shares: 100,
+    strikeInterval: 5,
+    fillAssumption: "mid" as const,
+  };
+
+  it("does nothing when the flag is off", () => {
+    const prices = generatePrices(100, 500, 0.02, -0.002);
+    const result = runBacktest(prices, { ...baseConfig, averageDownWithPremium: false });
+    expect(result.averagedDownLots).toBe(0);
+    expect(result.reinvestedPremium).toBe(0);
+    expect(result.endingShares).toBe(100);
+  });
+
+  it("buys lots below cost basis and lowers the basis in a downtrend", () => {
+    // High-delta calls in a volatile decline: fat premiums accumulate while
+    // spot slides below basis, so lots get bought and the basis drops.
+    const prices = generatePrices(100, 1500, 0.04, -0.0008);
+    const result = runBacktest(prices, {
+      ...baseConfig,
+      deltaTarget: 0.50,
+      averageDownWithPremium: true,
+    });
+
+    expect(result.averagedDownLots).toBeGreaterThan(0);
+    expect(result.reinvestedPremium).toBeGreaterThan(0);
+    expect(result.endingShares).toBeGreaterThan(100);
+    // Ending basis must be below the initial ~100 purchase price
+    expect(result.endingCostBasis).not.toBeNull();
+    expect(result.endingCostBasis!).toBeLessThan(100);
+  });
+
+  it("sells more call contracts after buying extra lots", () => {
+    const prices = generatePrices(100, 1500, 0.04, -0.0008);
+    const result = runBacktest(prices, {
+      ...baseConfig,
+      deltaTarget: 0.50,
+      averageDownWithPremium: true,
+    });
+
+    expect(result.averagedDownLots).toBeGreaterThan(0);
+    const maxContracts = Math.max(...result.trades.map((t) => t.contracts));
+    expect(maxContracts).toBeGreaterThan(1);
+  });
+
+  it("never buys when the stock stays above cost basis", () => {
+    // Strong uptrend: spot never below basis after first cycle
+    const prices = generatePrices(100, 500, 0.01, 0.003);
+    const result = runBacktest(prices, { ...baseConfig, averageDownWithPremium: true });
+    expect(result.averagedDownLots).toBe(0);
+    expect(result.endingShares).toBe(100);
+  });
+});
+
 describe("runBacktest - edge cases", () => {
   it("handles insufficient data gracefully", () => {
     const prices = generatePrices(100, 30, 0.02);

@@ -63,6 +63,7 @@ export async function POST(req: Request) {
       neverSellCallBelowCostBasis: body.neverSellCallBelowCostBasis === true,
       minCallPremiumYieldPct:
         Number(body.minCallPremiumYieldPct) > 0 ? Number(body.minCallPremiumYieldPct) : undefined,
+      averageDownWithPremium: body.averageDownWithPremium === true,
     });
 
     return NextResponse.json({
