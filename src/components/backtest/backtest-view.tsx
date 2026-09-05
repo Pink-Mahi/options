@@ -174,6 +174,26 @@ export function BacktestView() {
               {loading ? "Running…" : "Run backtest"}
             </Button>
           </div>
+          <div className="mt-4 rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground space-y-1.5">
+            <p>
+              <strong className="text-foreground">What is delta?</strong> Delta is a shortcut for{" "}
+              <em>how likely the option is to be exercised against you</em>. A delta of 0.30 means roughly a
+              30% chance the stock ends up past your strike at expiration — and about a 70% chance the option
+              expires worthless and you keep the full premium.
+            </p>
+            <p>
+              <strong className="text-foreground">Lower delta (0.10–0.20):</strong> strike is further away →
+              safer, you keep your shares more often, but collect less premium.
+            </p>
+            <p>
+              <strong className="text-foreground">Higher delta (0.40–0.50):</strong> strike is closer to the
+              current price → more premium income, but you&apos;ll be assigned / called away more often.
+            </p>
+            <p>
+              <strong className="text-foreground">DTE per cycle</strong> is how many days each option lasts
+              before it expires and a new one is sold. 30–60 days is the common sweet spot for income sellers.
+            </p>
+          </div>
         </CardContent>
       </Card>
 
