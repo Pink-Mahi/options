@@ -3,7 +3,8 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-ENV NODE_ENV=development
+# Install OpenSSL for Prisma engine compatibility
+RUN apk add --no-cache openssl
 
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@10 --activate
@@ -12,7 +13,7 @@ RUN corepack enable && corepack prepare pnpm@10 --activate
 COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* ./
 
 # Install dependencies (including devDependencies needed for build)
-RUN pnpm install --frozen-lockfile
+RUN NODE_ENV=development pnpm install --frozen-lockfile
 
 # Copy source
 COPY . .
@@ -28,7 +29,7 @@ FROM node:22-alpine AS runner
 
 WORKDIR /app
 
-RUN corepack enable && corepack prepare pnpm@10 --activate
+RUN apk add --no-cache openssl && corepack enable && corepack prepare pnpm@10 --activate
 
 ENV NODE_ENV=production
 
