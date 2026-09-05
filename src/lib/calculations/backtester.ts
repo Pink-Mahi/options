@@ -43,6 +43,12 @@ export interface BacktestConfig {
   strikeInterval: number;
   /** Premium assumption: "bid" (conservative) or "mid" */
   fillAssumption: "bid" | "mid";
+  /**
+   * When true, covered calls are only sold at strikes >= the share cost basis
+   * (the price paid for the shares — e.g. the put strike at assignment).
+   * Prevents locking in a loss by selling a call below what you paid.
+   */
+  neverSellCallBelowCostBasis?: boolean;
 }
 
 export interface BacktestTrade {
@@ -60,6 +66,8 @@ export interface BacktestTrade {
   cyclePnl: number;
   /** Days held */
   daysHeld: number;
+  /** True when the cost-basis floor forced a higher strike than the delta target picked */
+  flooredByCostBasis: boolean;
 }
 
 export interface BacktestResult {
@@ -87,6 +95,8 @@ export interface BacktestResult {
   sharpeRatio: number | null;
   // Equity curve
   equityCurve: { date: string; strategyEquity: number; buyHoldEquity: number }[];
+  /** Cycles where the cost-basis floor raised the call strike above the delta-target pick */
+  costBasisFlooredCount: number;
   warnings: string[];
 }
 
@@ -113,12 +123,14 @@ function realizedVol(prices: HistoricalPricePoint[], endIdx: number, window: num
   return Math.sqrt(variance) * Math.sqrt(252);
 }
 
-/** Round strike to the nearest interval. */
-function roundStrike(price: number, interval: number): number {
-  return Math.round(price / interval) * interval;
-}
-
-/** Find the strike whose delta is closest to the target. */
+/**
+ * Find the strike whose delta is closest to the target.
+ *
+ * When `minStrike` is provided (cost-basis floor for covered calls), strikes
+ * below it are excluded. If the floor sits above the normal search range, the
+ * floored strike itself is used — a deep-OTM call with near-zero premium,
+ * which mirrors what a real account would see.
+ */
 function findStrikeByDelta(
   spot: number,
   iv: number,
@@ -127,31 +139,49 @@ function findStrikeByDelta(
   optionType: "CALL" | "PUT",
   deltaTarget: number,
   strikeInterval: number,
-): { strike: number; delta: number; premium: number } {
-  let bestStrike = roundStrike(spot, strikeInterval);
-  let bestDeltaDiff = Infinity;
-  let bestPremium = 0;
-  let bestDelta = 0;
+  minStrike?: number,
+): { strike: number; delta: number; premium: number; flooredByMin: boolean } {
+  const T = dte / 365;
+
+  const scan = (from: number, to: number) => {
+    let best = { strike: from, delta: 0, premium: 0, diff: Infinity };
+    for (let strike = from; strike <= to + 1e-9; strike += strikeInterval) {
+      const bs = blackScholes({ spot, strike, timeToExpiry: T, riskFreeRate, volatility: iv, optionType });
+      const delta = Math.abs(bs.greeks.delta ?? 0);
+      const diff = Math.abs(delta - deltaTarget);
+      if (diff < best.diff) {
+        best = { strike, delta, premium: bs.price, diff };
+      }
+    }
+    return best;
+  };
 
   // Search strikes from 70% to 130% of spot
   const lowStrike = Math.floor(spot * 0.7 / strikeInterval) * strikeInterval;
   const highStrike = Math.ceil(spot * 1.3 / strikeInterval) * strikeInterval;
 
-  for (let strike = lowStrike; strike <= highStrike; strike += strikeInterval) {
-    const T = dte / 365;
-    const bs = blackScholes({ spot, strike, timeToExpiry: T, riskFreeRate, volatility: iv, optionType });
-    const delta = Math.abs(bs.greeks.delta ?? 0);
-    const diff = Math.abs(delta - deltaTarget);
-    if (diff < bestDeltaDiff) {
-      bestDeltaDiff = diff;
-      bestStrike = strike;
-      bestPremium = bs.price;
-      bestDelta = delta;
-    }
+  const unconstrained = scan(lowStrike, highStrike);
+
+  const minRounded =
+    minStrike != null ? Math.ceil(minStrike / strikeInterval) * strikeInterval : null;
+
+  if (minRounded != null && unconstrained.strike < minRounded) {
+    const constrained = scan(minRounded, Math.max(highStrike, minRounded));
+    return {
+      strike: constrained.strike,
+      delta: constrained.delta,
+      premium: constrained.premium,
+      flooredByMin: true,
+    };
   }
 
   // Return the ACHIEVED delta, not the requested target.
-  return { strike: bestStrike, delta: bestDelta, premium: bestPremium };
+  return {
+    strike: unconstrained.strike,
+    delta: unconstrained.delta,
+    premium: unconstrained.premium,
+    flooredByMin: false,
+  };
 }
 
 /** Compute max drawdown from an equity curve. */
@@ -222,10 +252,14 @@ export function runBacktest(
   let strategyEquity = config.startingCapital;
   let buyHoldEquity = config.startingCapital;
   let sharesHeld = config.shares;
+  /** Price paid for the currently held shares (put strike at assignment, or
+   *  the spot price when a covered-call position was opened). */
+  let shareCostBasis: number | null = null;
   let cashFromPremium = 0;
   let assignmentCount = 0;
   let calledAwayCount = 0;
   let expiredWorthlessCount = 0;
+  let costBasisFlooredCount = 0;
 
   const firstPrice = prices[0];
   const lastPrice = prices[prices.length - 1];
@@ -252,6 +286,7 @@ export function runBacktest(
       maxDrawdown: 0,
       sharpeRatio: null,
       equityCurve: [],
+      costBasisFlooredCount: 0,
       warnings: ["No price data available."],
     };
   }
@@ -285,8 +320,20 @@ export function runBacktest(
       break;
     }
 
+    // Establish cost basis the first time a covered call is sold
+    // (shares are treated as bought at the first cycle's open price).
+    if (optionType === "CALL" && shareCostBasis == null) {
+      shareCostBasis = spot;
+    }
+
+    // Cost-basis floor: never sell a call below what we paid for the shares.
+    const minCallStrike =
+      optionType === "CALL" && config.neverSellCallBelowCostBasis && shareCostBasis != null
+        ? shareCostBasis
+        : undefined;
+
     // Find strike and price the option
-    const { strike, premium } = findStrikeByDelta(
+    const { strike, premium, flooredByMin } = findStrikeByDelta(
       spot,
       iv,
       config.dteTarget,
@@ -294,7 +341,9 @@ export function runBacktest(
       optionType,
       config.deltaTarget,
       config.strikeInterval,
+      minCallStrike,
     );
+    if (flooredByMin) costBasisFlooredCount++;
 
     // Apply fill assumption
     const fillPrice = config.fillAssumption === "bid" ? premium * 0.95 : premium;
@@ -322,6 +371,7 @@ export function runBacktest(
         cyclePnl = premiumIncome + stockPnl;
         if (config.strategy === "WHEEL") {
           sharesHeld = 0; // shares called away
+          shareCostBasis = null;
         }
       } else {
         outcome = "EXPIRED_WORTHLESS";
@@ -338,6 +388,7 @@ export function runBacktest(
         cyclePnl = premiumIncome - (strike - closeSpot) * config.contracts * 100;
         if (config.strategy === "WHEEL") {
           sharesHeld = config.contracts * 100; // shares assigned
+          shareCostBasis = strike; // we "bought" the shares at the put strike
         }
       } else {
         outcome = "EXPIRED_WORTHLESS";
@@ -359,6 +410,7 @@ export function runBacktest(
       stockPriceAtClose: closeSpot,
       cyclePnl,
       daysHeld: config.dteTarget,
+      flooredByCostBasis: flooredByMin,
     });
 
     // Update equity
@@ -419,6 +471,7 @@ export function runBacktest(
     maxDrawdown: dd,
     sharpeRatio: sr,
     equityCurve,
+    costBasisFlooredCount,
     warnings,
   };
 }

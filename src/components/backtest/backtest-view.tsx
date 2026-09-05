@@ -38,6 +38,7 @@ export function BacktestView() {
   const [deltaTarget, setDeltaTarget] = useState(0.3);
   const [dteTarget, setDteTarget] = useState(45);
   const [range, setRange] = useState("3y");
+  const [neverBelowCost, setNeverBelowCost] = useState(true);
   const [result, setResult] = useState<BacktestResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,7 +50,7 @@ export function BacktestView() {
       const res = await fetch("/api/backtest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ symbol, strategy, deltaTarget, dteTarget, range }),
+        body: JSON.stringify({ symbol, strategy, deltaTarget, dteTarget, range, neverSellCallBelowCostBasis: neverBelowCost }),
         cache: "no-store",
       });
       const data = await res.json();
@@ -194,6 +195,21 @@ export function BacktestView() {
               before it expires and a new one is sold. 30–60 days is the common sweet spot for income sellers.
             </p>
           </div>
+          <label className="mt-3 flex items-start gap-2 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={neverBelowCost}
+              onChange={(e) => setNeverBelowCost(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-input"
+            />
+            <span>
+              <strong>Never sell calls below my cost basis.</strong>{" "}
+              <span className="text-muted-foreground">
+                If a put is assigned at $300, later covered calls are only sold at strikes of $300 or higher —
+                so you can&apos;t be called away at a loss. Premiums may be tiny while the stock is underwater.
+              </span>
+            </span>
+          </label>
         </CardContent>
       </Card>
 
@@ -235,6 +251,12 @@ export function BacktestView() {
             />
             <Stat label="Max drawdown" value={formatPercent(result.maxDrawdown)} tone="loss" />
             <Stat label="Cycles" value={String(result.totalCycles)} />
+            {result.costBasisFlooredCount > 0 && (
+              <Stat
+                label="Calls floored at cost basis"
+                value={String(result.costBasisFlooredCount)}
+              />
+            )}
             <Stat label="Expired worthless" value={formatPercent(result.winRate)} />
             <Stat label="Total premium" value={formatCurrency(result.totalPremiumIncome, 0)} />
             <Stat
@@ -295,6 +317,12 @@ export function BacktestView() {
                 <Row label="Called away (call)" value={String(result.calledAwayCount)} />
                 <Row label="Avg premium / cycle" value={formatCurrency(result.avgPremiumPerCycle, 2)} />
                 <Row label="Avg days / cycle" value={`${Math.round(result.avgDaysPerCycle)}`} />
+                {result.costBasisFlooredCount > 0 && (
+                  <Row
+                    label="Cycles floored at cost basis"
+                    value={String(result.costBasisFlooredCount)}
+                  />
+                )}
               </CardContent>
             </Card>
 

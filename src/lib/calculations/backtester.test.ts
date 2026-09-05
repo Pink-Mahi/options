@@ -138,6 +138,69 @@ describe("runBacktest - wheel", () => {
     expect(hasPuts).toBe(true);
     expect(hasCalls).toBe(true);
   });
+
+  it("never sells calls below the assignment strike when cost-basis floor is on", () => {
+    // Strong downtrend forces put assignment, then calls must be >= assignment strike
+    const prices = generatePrices(100, 500, 0.02, -0.002);
+    const result = runBacktest(prices, {
+      strategy: "WHEEL",
+      symbol: "TEST",
+      deltaTarget: 0.30,
+      dteTarget: 30,
+      contracts: 1,
+      riskFreeRate: 0.05,
+      startingCapital: 10000,
+      shares: 0,
+      strikeInterval: 5,
+      fillAssumption: "mid",
+      neverSellCallBelowCostBasis: true,
+    });
+
+    // Walk trades: after an ASSIGNED put, every subsequent CALL strike must be
+    // >= that put's strike until shares are called away.
+    let costBasis: number | null = null;
+    let sawFlooredCall = false;
+    for (const t of result.trades) {
+      if (t.optionType === "PUT" && t.outcome === "ASSIGNED") {
+        costBasis = t.strike;
+      } else if (t.optionType === "CALL" && costBasis != null) {
+        expect(t.strike).toBeGreaterThanOrEqual(costBasis);
+        if (t.flooredByCostBasis) sawFlooredCall = true;
+      }
+      if (t.outcome === "CALLED_AWAY") costBasis = null;
+    }
+    expect(result.assignmentCount).toBeGreaterThan(0);
+    expect(sawFlooredCall).toBe(true);
+    expect(result.costBasisFlooredCount).toBeGreaterThan(0);
+  });
+
+  it("allows calls below cost basis when the floor is off", () => {
+    const prices = generatePrices(100, 500, 0.02, -0.002);
+    const result = runBacktest(prices, {
+      strategy: "WHEEL",
+      symbol: "TEST",
+      deltaTarget: 0.30,
+      dteTarget: 30,
+      contracts: 1,
+      riskFreeRate: 0.05,
+      startingCapital: 10000,
+      shares: 0,
+      strikeInterval: 5,
+      fillAssumption: "mid",
+      neverSellCallBelowCostBasis: false,
+    });
+
+    // In a downtrend, at least one call should be sold below the assignment strike
+    let costBasis: number | null = null;
+    let sawBelowBasis = false;
+    for (const t of result.trades) {
+      if (t.optionType === "PUT" && t.outcome === "ASSIGNED") costBasis = t.strike;
+      if (t.optionType === "CALL" && costBasis != null && t.strike < costBasis) sawBelowBasis = true;
+      if (t.outcome === "CALLED_AWAY") costBasis = null;
+    }
+    expect(sawBelowBasis).toBe(true);
+    expect(result.costBasisFlooredCount).toBe(0);
+  });
 });
 
 describe("runBacktest - edge cases", () => {

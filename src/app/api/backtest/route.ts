@@ -60,6 +60,7 @@ export async function POST(req: Request) {
       shares,
       strikeInterval: spot >= 200 ? 5 : spot >= 50 ? 2.5 : 1,
       fillAssumption: body.fillAssumption === "mid" ? "mid" : "bid",
+      neverSellCallBelowCostBasis: body.neverSellCallBelowCostBasis === true,
     });
 
     return NextResponse.json({
