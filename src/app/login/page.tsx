@@ -5,12 +5,12 @@ import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button, Input, Label } from "@/components/ui";
 
-export default function LoginPage({ error }: { error?: string }) {
+export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(error ?? "");
+  const [err, setErr] = useState("");
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();

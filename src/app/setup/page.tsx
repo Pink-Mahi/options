@@ -5,14 +5,14 @@ import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button, Input, Label } from "@/components/ui";
 
-export default function SetupPage({ error }: { error?: string }) {
+export default function SetupPage() {
   const router = useRouter();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState(error ?? "");
+  const [err, setErr] = useState("");
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
