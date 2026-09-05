@@ -4,6 +4,10 @@ set -e
 PGDATA=/var/lib/postgresql/data
 PGLOG=/var/lib/postgresql/pg.log
 
+# PostgreSQL runs inside this container — always use localhost regardless of
+# any DATABASE_URL injected by the platform (e.g. Coolify env vars).
+export DATABASE_URL="postgresql://opc:opc_dev_password@127.0.0.1:5432/opc?schema=public"
+
 # Ensure postgres user exists and owns the data directory
 mkdir -p "$PGDATA"
 chown -R postgres:postgres /var/lib/postgresql
