@@ -49,6 +49,13 @@ export interface BacktestConfig {
    * Prevents locking in a loss by selling a call below what you paid.
    */
   neverSellCallBelowCostBasis?: boolean;
+  /**
+   * Minimum call premium yield as a decimal (e.g. 0.025 = 2.5% of spot).
+   * Simulates a resting GTC limit order: the backtester re-checks the modeled
+   * premium every 5 trading days within the cycle and only "fills" when the
+   * yield meets this floor. Unfilled cycles are recorded as NO_FILL.
+   */
+  minCallPremiumYieldPct?: number;
 }
 
 export interface BacktestTrade {
@@ -59,7 +66,7 @@ export interface BacktestTrade {
   premiumPerShare: number;
   contracts: number;
   premiumIncome: number;
-  outcome: "EXPIRED_WORTHLESS" | "ASSIGNED" | "CALLED_AWAY" | "ROLLED";
+  outcome: "EXPIRED_WORTHLESS" | "ASSIGNED" | "CALLED_AWAY" | "ROLLED" | "NO_FILL";
   stockPriceAtOpen: number;
   stockPriceAtClose: number;
   /** P/L from this cycle including stock movement if assigned/called */
@@ -68,6 +75,8 @@ export interface BacktestTrade {
   daysHeld: number;
   /** True when the cost-basis floor forced a higher strike than the delta target picked */
   flooredByCostBasis: boolean;
+  /** Premium as a fraction of the stock price at open (e.g. 0.025 = 2.5%) */
+  premiumYield: number;
 }
 
 export interface BacktestResult {
@@ -97,6 +106,12 @@ export interface BacktestResult {
   equityCurve: { date: string; strategyEquity: number; buyHoldEquity: number }[];
   /** Cycles where the cost-basis floor raised the call strike above the delta-target pick */
   costBasisFlooredCount: number;
+  /** Call cycles where the GTC limit order never filled (min yield not reached) */
+  noFillCount: number;
+  /** Fraction of call cycles that filled (1 when no yield floor is set) */
+  callFillRate: number;
+  /** Average premium yield across filled call trades */
+  avgCallPremiumYield: number;
   warnings: string[];
 }
 
@@ -260,6 +275,9 @@ export function runBacktest(
   let calledAwayCount = 0;
   let expiredWorthlessCount = 0;
   let costBasisFlooredCount = 0;
+  let noFillCount = 0;
+  let callCycleCount = 0;
+  let callPremiumYieldSum = 0;
 
   const firstPrice = prices[0];
   const lastPrice = prices[prices.length - 1];
@@ -287,6 +305,9 @@ export function runBacktest(
       sharpeRatio: null,
       equityCurve: [],
       costBasisFlooredCount: 0,
+      noFillCount: 0,
+      callFillRate: 1,
+      avgCallPremiumYield: 0,
       warnings: ["No price data available."],
     };
   }
@@ -332,39 +353,102 @@ export function runBacktest(
         ? shareCostBasis
         : undefined;
 
-    // Find strike and price the option
-    const { strike, premium, flooredByMin } = findStrikeByDelta(
-      spot,
-      iv,
-      config.dteTarget,
-      config.riskFreeRate,
-      optionType,
-      config.deltaTarget,
-      config.strikeInterval,
-      minCallStrike,
-    );
-    if (flooredByMin) costBasisFlooredCount++;
-
-    // Apply fill assumption
-    const fillPrice = config.fillAssumption === "bid" ? premium * 0.95 : premium;
-    const premiumIncome = fillPrice * 100 * config.contracts;
-    cashFromPremium += premiumIncome;
-
-    // Find close date (DTE days later)
+    // Cycle window: the option always expires tradingDaysPerCycle after the
+    // cycle starts, even if the GTC limit fills partway through.
     const closeIdx = Math.min(idx + tradingDaysPerCycle, prices.length - 1);
     const closePrice = prices[closeIdx];
     if (!closePrice) { idx++; continue; }
-
     const closeSpot = closePrice.adjustedClose;
+
+    // --- GTC limit-order simulation for calls ---------------------------
+    // When a minimum premium yield is set, the order only fills if the modeled
+    // premium reaches the floor. Re-check every 5 trading days within the
+    // cycle; a later fill means a shorter remaining DTE.
+    let openSpot = spot;
+    let openDate = openPrice.date;
+    let strike = 0;
+    let premium = 0;
+    let flooredByMin = false;
+    let filled = true;
+
+    const yieldFloor = config.minCallPremiumYieldPct ?? 0;
+    if (optionType === "CALL" && yieldFloor > 0) {
+      filled = false;
+      for (let tryIdx = idx; tryIdx <= closeIdx; tryIdx += 5) {
+        const tryPoint = prices[tryIdx];
+        if (!tryPoint) continue;
+        const trySpot = tryPoint.adjustedClose;
+        const tryIv = realizedVol(prices, tryIdx, 30);
+        const elapsedDays =
+          (new Date(tryPoint.date).getTime() - new Date(openPrice.date).getTime()) /
+          (1000 * 60 * 60 * 24);
+        const remainingDte = Math.max(1, config.dteTarget - elapsedDays);
+        const res = findStrikeByDelta(
+          trySpot,
+          tryIv,
+          remainingDte,
+          config.riskFreeRate,
+          "CALL",
+          config.deltaTarget,
+          config.strikeInterval,
+          minCallStrike,
+        );
+        const tryFill = res.premium * (config.fillAssumption === "bid" ? 0.95 : 1);
+        if (trySpot > 0 && tryFill / trySpot >= yieldFloor) {
+          filled = true;
+          openSpot = trySpot;
+          openDate = tryPoint.date;
+          strike = res.strike;
+          premium = res.premium;
+          flooredByMin = res.flooredByMin;
+          break;
+        }
+        // Keep the last attempt for display even when unfilled
+        strike = res.strike;
+      }
+    } else {
+      const res = findStrikeByDelta(
+        spot,
+        iv,
+        config.dteTarget,
+        config.riskFreeRate,
+        optionType,
+        config.deltaTarget,
+        config.strikeInterval,
+        minCallStrike,
+      );
+      strike = res.strike;
+      premium = res.premium;
+      flooredByMin = res.flooredByMin;
+    }
+    if (flooredByMin) costBasisFlooredCount++;
+
+    // Apply fill assumption
+    const fillPrice = filled
+      ? config.fillAssumption === "bid" ? premium * 0.95 : premium
+      : 0;
+    const premiumIncome = fillPrice * 100 * config.contracts;
+    cashFromPremium += premiumIncome;
+    const premiumYield = filled && openSpot > 0 ? fillPrice / openSpot : 0;
+    if (optionType === "CALL") {
+      callCycleCount++;
+      if (filled) callPremiumYieldSum += premiumYield;
+    }
+
     let outcome: BacktestTrade["outcome"];
     let cyclePnl = premiumIncome; // start with premium
 
-    if (optionType === "CALL") {
+    if (optionType === "CALL" && !filled) {
+      // GTC limit never reached — shares sat uncovered for the cycle.
+      outcome = "NO_FILL";
+      noFillCount++;
+      cyclePnl = (closeSpot - openSpot) * sharesHeld;
+    } else if (optionType === "CALL") {
       // Short call against shares. Stock P/L is marked cycle-open -> cycle-close
       // for EVERY cycle so the equity curve tracks the shares continuously.
       // Upside is capped at the strike when the call finishes ITM.
       const stockExit = closeSpot > strike ? strike : closeSpot;
-      const stockPnl = (stockExit - spot) * sharesHeld;
+      const stockPnl = (stockExit - openSpot) * sharesHeld;
       if (closeSpot > strike) {
         outcome = "CALLED_AWAY";
         calledAwayCount++;
@@ -397,8 +481,16 @@ export function runBacktest(
       }
     }
 
+    const daysHeld = Math.max(
+      1,
+      Math.round(
+        (new Date(closePrice.date).getTime() - new Date(openDate).getTime()) /
+          (1000 * 60 * 60 * 24),
+      ),
+    );
+
     trades.push({
-      openDate: openPrice.date,
+      openDate,
       closeDate: closePrice.date,
       optionType,
       strike,
@@ -406,11 +498,12 @@ export function runBacktest(
       contracts: config.contracts,
       premiumIncome,
       outcome,
-      stockPriceAtOpen: spot,
+      stockPriceAtOpen: openSpot,
       stockPriceAtClose: closeSpot,
       cyclePnl,
-      daysHeld: config.dteTarget,
+      daysHeld,
       flooredByCostBasis: flooredByMin,
+      premiumYield,
     });
 
     // Update equity
@@ -472,6 +565,10 @@ export function runBacktest(
     sharpeRatio: sr,
     equityCurve,
     costBasisFlooredCount,
+    noFillCount,
+    callFillRate: callCycleCount > 0 ? (callCycleCount - noFillCount) / callCycleCount : 1,
+    avgCallPremiumYield:
+      callCycleCount - noFillCount > 0 ? callPremiumYieldSum / (callCycleCount - noFillCount) : 0,
     warnings,
   };
 }

@@ -39,6 +39,7 @@ export function BacktestView() {
   const [dteTarget, setDteTarget] = useState(45);
   const [range, setRange] = useState("3y");
   const [neverBelowCost, setNeverBelowCost] = useState(true);
+  const [minYieldPct, setMinYieldPct] = useState(0);
   const [result, setResult] = useState<BacktestResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,7 +51,15 @@ export function BacktestView() {
       const res = await fetch("/api/backtest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ symbol, strategy, deltaTarget, dteTarget, range, neverSellCallBelowCostBasis: neverBelowCost }),
+        body: JSON.stringify({
+          symbol,
+          strategy,
+          deltaTarget,
+          dteTarget,
+          range,
+          neverSellCallBelowCostBasis: neverBelowCost,
+          minCallPremiumYieldPct: minYieldPct > 0 ? minYieldPct / 100 : undefined,
+        }),
         cache: "no-store",
       });
       const data = await res.json();
@@ -156,6 +165,19 @@ export function BacktestView() {
               />
             </div>
             <div className="space-y-1.5">
+              <Label htmlFor="bt-minyield">Min call yield %</Label>
+              <Input
+                id="bt-minyield"
+                type="number"
+                step="0.1"
+                min="0"
+                max="20"
+                value={minYieldPct}
+                onChange={(e) => setMinYieldPct(Number(e.target.value))}
+                placeholder="0 = off"
+              />
+            </div>
+            <div className="space-y-1.5">
               <Label htmlFor="bt-range">History</Label>
               <select
                 id="bt-range"
@@ -193,6 +215,13 @@ export function BacktestView() {
             <p>
               <strong className="text-foreground">DTE per cycle</strong> is how many days each option lasts
               before it expires and a new one is sold. 30–60 days is the common sweet spot for income sellers.
+            </p>
+            <p>
+              <strong className="text-foreground">Min call yield %</strong> simulates a resting GTC limit
+              order: the call is only sold if the premium is at least this % of the stock price (e.g. 2.5 =
+              sell only if you collect $2.50 per $100 of stock). The backtester re-checks every 5 trading days
+              within the cycle — if it never reaches your price, the order doesn&apos;t fill and your shares sit
+              uncovered that cycle. Set to 0 to always sell at market.
             </p>
           </div>
           <label className="mt-3 flex items-start gap-2 text-sm cursor-pointer">
@@ -255,6 +284,18 @@ export function BacktestView() {
               <Stat
                 label="Calls floored at cost basis"
                 value={String(result.costBasisFlooredCount)}
+              />
+            )}
+            {result.noFillCount > 0 && (
+              <Stat
+                label="GTC orders not filled"
+                value={`${result.noFillCount} (${formatPercent(1 - result.callFillRate, 0)} of calls)`}
+              />
+            )}
+            {result.avgCallPremiumYield > 0 && (
+              <Stat
+                label="Avg call yield"
+                value={formatPercent(result.avgCallPremiumYield, 2)}
               />
             )}
             <Stat label="Expired worthless" value={formatPercent(result.winRate)} />
@@ -323,6 +364,12 @@ export function BacktestView() {
                     value={String(result.costBasisFlooredCount)}
                   />
                 )}
+                {result.noFillCount > 0 && (
+                  <Row label="GTC orders not filled" value={String(result.noFillCount)} />
+                )}
+                {result.avgCallPremiumYield > 0 && (
+                  <Row label="Avg call yield / cycle" value={formatPercent(result.avgCallPremiumYield, 2)} />
+                )}
               </CardContent>
             </Card>
 
@@ -357,6 +404,7 @@ export function BacktestView() {
                       <TableHead className="text-right">Stock open</TableHead>
                       <TableHead className="text-right">Stock close</TableHead>
                       <TableHead className="text-right">Premium</TableHead>
+                      <TableHead className="text-right">Yield</TableHead>
                       <TableHead>Outcome</TableHead>
                       <TableHead className="text-right">Cycle P/L</TableHead>
                     </TableRow>
@@ -371,6 +419,9 @@ export function BacktestView() {
                         <TableCell className="text-right">{formatCurrency(t.stockPriceAtOpen, 2)}</TableCell>
                         <TableCell className="text-right">{formatCurrency(t.stockPriceAtClose, 2)}</TableCell>
                         <TableCell className="text-right">{formatCurrency(t.premiumIncome, 2)}</TableCell>
+                        <TableCell className="text-right">
+                          {t.outcome === "NO_FILL" ? "—" : formatPercent(t.premiumYield, 2)}
+                        </TableCell>
                         <TableCell>
                           <Badge variant={outcomeVariant(t.outcome)}>{t.outcome.replace(/_/g, " ").toLowerCase()}</Badge>
                         </TableCell>
@@ -399,7 +450,7 @@ function outcomeVariant(outcome: string): "profit" | "warning" | "loss" | "secon
   if (outcome === "EXPIRED_WORTHLESS") return "profit";
   if (outcome === "CALLED_AWAY") return "warning";
   if (outcome === "ASSIGNED") return "loss";
-  return "secondary";
+  return "secondary"; // NO_FILL, ROLLED
 }
 
 function Stat({

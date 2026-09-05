@@ -203,6 +203,60 @@ describe("runBacktest - wheel", () => {
   });
 });
 
+describe("runBacktest - GTC min yield floor", () => {
+  const baseConfig = {
+    strategy: "COVERED_CALL" as const,
+    symbol: "TEST",
+    deltaTarget: 0.30,
+    dteTarget: 30,
+    contracts: 1,
+    riskFreeRate: 0.05,
+    startingCapital: 10000,
+    shares: 100,
+    strikeInterval: 5,
+    fillAssumption: "mid" as const,
+  };
+
+  it("fills every cycle when the floor is 0 / unset", () => {
+    const prices = generatePrices(100, 300, 0.02, 0.0005);
+    const result = runBacktest(prices, { ...baseConfig, minCallPremiumYieldPct: 0 });
+    expect(result.noFillCount).toBe(0);
+    expect(result.callFillRate).toBe(1);
+    expect(result.trades.every((t) => t.outcome !== "NO_FILL")).toBe(true);
+  });
+
+  it("records NO_FILL cycles when the floor is impossibly high", () => {
+    const prices = generatePrices(100, 300, 0.02, 0.0005);
+    const result = runBacktest(prices, { ...baseConfig, minCallPremiumYieldPct: 0.5 });
+    expect(result.noFillCount).toBe(result.totalCycles);
+    expect(result.callFillRate).toBe(0);
+    expect(result.totalPremiumIncome).toBe(0);
+    expect(result.trades.every((t) => t.outcome === "NO_FILL")).toBe(true);
+  });
+
+  it("every filled call meets the yield floor", () => {
+    const prices = generatePrices(100, 500, 0.03, 0.0003);
+    const floor = 0.005; // 0.5% — low enough that some cycles fill
+    const result = runBacktest(prices, { ...baseConfig, minCallPremiumYieldPct: floor });
+    const filledCalls = result.trades.filter((t) => t.optionType === "CALL" && t.outcome !== "NO_FILL");
+    for (const t of filledCalls) {
+      expect(t.premiumYield).toBeGreaterThanOrEqual(floor - 1e-9);
+    }
+    expect(result.noFillCount + filledCalls.length).toBe(result.totalCycles);
+    if (filledCalls.length > 0) {
+      expect(result.avgCallPremiumYield).toBeGreaterThanOrEqual(floor - 1e-9);
+    }
+  });
+
+  it("higher floor reduces or equals total premium income", () => {
+    const prices = generatePrices(100, 400, 0.025, 0.0003);
+    const noFloor = runBacktest(prices, baseConfig);
+    const withFloor = runBacktest(prices, { ...baseConfig, minCallPremiumYieldPct: 0.02 });
+    expect(withFloor.totalPremiumIncome).toBeLessThanOrEqual(noFloor.totalPremiumIncome + 1e-6);
+    expect(withFloor.noFillCount).toBeGreaterThanOrEqual(0);
+  });
+});
+
 describe("runBacktest - edge cases", () => {
   it("handles insufficient data gracefully", () => {
     const prices = generatePrices(100, 30, 0.02);

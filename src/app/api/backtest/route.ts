@@ -61,6 +61,8 @@ export async function POST(req: Request) {
       strikeInterval: spot >= 200 ? 5 : spot >= 50 ? 2.5 : 1,
       fillAssumption: body.fillAssumption === "mid" ? "mid" : "bid",
       neverSellCallBelowCostBasis: body.neverSellCallBelowCostBasis === true,
+      minCallPremiumYieldPct:
+        Number(body.minCallPremiumYieldPct) > 0 ? Number(body.minCallPremiumYieldPct) : undefined,
     });
 
     return NextResponse.json({
