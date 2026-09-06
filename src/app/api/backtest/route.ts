@@ -39,9 +39,10 @@ export async function POST(req: Request) {
       ? (requestedRange as HistRange)
       : "3y";
 
-    const [hist, quote] = await Promise.all([
+    const [hist, quote, spyHist] = await Promise.all([
       getHistoricalPrices({ symbol, range }),
       getQuote({ symbol }),
+      getHistoricalPrices({ symbol: "SPY", range }).catch(() => null),
     ]);
 
     const spot = quote.data.price;
@@ -52,29 +53,33 @@ export async function POST(req: Request) {
         ? Number(body.startingCapital)
         : Math.max(spot * contracts * 100, 1);
 
-    const result = runBacktest(hist.data.points, {
-      strategy,
-      symbol,
-      deltaTarget: Number(body.deltaTarget) > 0 ? Number(body.deltaTarget) : 0.3,
-      dteTarget: Number(body.dteTarget) > 0 ? Number(body.dteTarget) : 45,
-      contracts,
-      riskFreeRate: Number(body.riskFreeRate) > 0 ? Number(body.riskFreeRate) : 0.05,
-      startingCapital,
-      shares,
-      strikeInterval: spot >= 200 ? 5 : spot >= 50 ? 2.5 : 1,
-      fillAssumption: body.fillAssumption === "mid" ? "mid" : "bid",
-      neverSellCallBelowCostBasis: body.neverSellCallBelowCostBasis === true,
-      minCallPremiumYieldPct:
-        Number(body.minCallPremiumYieldPct) > 0 ? Number(body.minCallPremiumYieldPct) : undefined,
-      minPutPremiumYieldPct:
-        Number(body.minPutPremiumYieldPct) > 0 ? Number(body.minPutPremiumYieldPct) : undefined,
-      averageDownWithPremium: body.averageDownWithPremium === true,
-      buyBackPct:
-        Number(body.buyBackPct) > 0 && Number(body.buyBackPct) < 1
-          ? Number(body.buyBackPct)
-          : undefined,
-      rollOnAssignment: body.rollOnAssignment === true,
-    });
+    const result = runBacktest(
+      hist.data.points,
+      {
+        strategy,
+        symbol,
+        deltaTarget: Number(body.deltaTarget) > 0 ? Number(body.deltaTarget) : 0.3,
+        dteTarget: Number(body.dteTarget) > 0 ? Number(body.dteTarget) : 45,
+        contracts,
+        riskFreeRate: Number(body.riskFreeRate) > 0 ? Number(body.riskFreeRate) : 0.05,
+        startingCapital,
+        shares,
+        strikeInterval: spot >= 200 ? 5 : spot >= 50 ? 2.5 : 1,
+        fillAssumption: body.fillAssumption === "mid" ? "mid" : "bid",
+        neverSellCallBelowCostBasis: body.neverSellCallBelowCostBasis === true,
+        minCallPremiumYieldPct:
+          Number(body.minCallPremiumYieldPct) > 0 ? Number(body.minCallPremiumYieldPct) : undefined,
+        minPutPremiumYieldPct:
+          Number(body.minPutPremiumYieldPct) > 0 ? Number(body.minPutPremiumYieldPct) : undefined,
+        averageDownWithPremium: body.averageDownWithPremium === true,
+        buyBackPct:
+          Number(body.buyBackPct) > 0 && Number(body.buyBackPct) < 1
+            ? Number(body.buyBackPct)
+            : undefined,
+        rollOnAssignment: body.rollOnAssignment === true,
+      },
+      spyHist?.data.points,
+    );
 
     return NextResponse.json({
       ...result,

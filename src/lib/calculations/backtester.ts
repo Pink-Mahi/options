@@ -17,6 +17,8 @@
 import type { HistoricalPricePoint } from "@/lib/types";
 import { blackScholes, impliedVolatility } from "./pricing-model";
 import { simpleAnnualizedRate } from "./core";
+import type { MarketContext } from "./market-context";
+import { analyzeMarketContext } from "./market-context";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -156,6 +158,8 @@ export interface BacktestResult {
   avgPutPremiumYield: number;
   /** Calls rolled (bought back ITM) instead of called away */
   rolledCount: number;
+  /** Market context analysis (benchmark comparison, regime, drawdown attribution). Null when no benchmark data provided. */
+  marketContext: MarketContext | null;
   warnings: string[];
 }
 
@@ -298,6 +302,7 @@ function sharpeRatio(
 export function runBacktest(
   prices: HistoricalPricePoint[],
   config: BacktestConfig,
+  benchmarkPrices?: HistoricalPricePoint[],
 ): BacktestResult {
   const warnings: string[] = [];
 
@@ -370,6 +375,7 @@ export function runBacktest(
       putFillRate: 1,
       avgPutPremiumYield: 0,
       rolledCount: 0,
+      marketContext: null,
       warnings: ["No price data available."],
     };
   }
@@ -700,6 +706,17 @@ export function runBacktest(
   const cyclesPerYear = config.dteTarget > 0 ? 365 / config.dteTarget : 0;
   const sr = sharpeRatio(cycleReturns, cyclesPerYear, config.riskFreeRate);
 
+  // Compute market context if benchmark data was provided
+  let marketContext: MarketContext | null = null;
+  if (benchmarkPrices && benchmarkPrices.length > 30) {
+    marketContext = analyzeMarketContext(
+      prices,
+      benchmarkPrices,
+      "SPY",
+      config.startingCapital,
+    );
+  }
+
   return {
     strategy: config.strategy,
     symbol: config.symbol,
@@ -740,6 +757,7 @@ export function runBacktest(
     avgPutPremiumYield:
       putCycleCount - putNoFillCount > 0 ? putPremiumYieldSum / (putCycleCount - putNoFillCount) : 0,
     rolledCount,
+    marketContext,
     warnings,
   };
 }

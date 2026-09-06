@@ -19,6 +19,7 @@ import { Button, Input, Label } from "@/components/ui";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn, formatCurrency, formatPercent } from "@/lib/utils";
 import type { BacktestResult } from "@/lib/calculations/backtester";
+import type { MarketContext } from "@/lib/calculations/market-context";
 
 type StrategyOption = "COVERED_CALL" | "CASH_SECURED_PUT" | "WHEEL";
 
@@ -172,11 +173,17 @@ export function BacktestView() {
     return Array.from(map.values()).sort((a, b) => a.month.localeCompare(b.month));
   }, [result]);
 
+  const benchmarkMap = useMemo(() => {
+    if (!result?.marketContext) return new Map<string, number>();
+    return new Map(result.marketContext.benchmarkEquity.map((p) => [p.date, Math.round(p.equity)]));
+  }, [result]);
+
   const chartData =
     result?.equityCurve.map((p) => ({
       date: p.date,
       Strategy: Math.round(p.strategyEquity),
       "Buy & hold": Math.round(p.buyHoldEquity),
+      ...(benchmarkMap.has(p.date) ? { SPY: benchmarkMap.get(p.date) } : {}),
     })) ?? [];
 
   const beatsBuyHold = result != null && result.outperformance > 0;
@@ -667,6 +674,9 @@ export function BacktestView() {
                       <Legend wrapperStyle={{ fontSize: 12 }} />
                       <Line type="monotone" dataKey="Strategy" stroke="#2563eb" dot={false} strokeWidth={2} />
                       <Line type="monotone" dataKey="Buy & hold" stroke="#94a3b8" dot={false} strokeWidth={2} />
+                      {result.marketContext && (
+                        <Line type="monotone" dataKey="SPY" stroke="#f59e0b" dot={false} strokeWidth={1.5} strokeDasharray="4 4" />
+                      )}
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
@@ -678,6 +688,10 @@ export function BacktestView() {
               )}
             </CardContent>
           </Card>
+
+          {result.marketContext && (
+            <MarketContextCard context={result.marketContext} />
+          )}
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>
@@ -843,5 +857,131 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="text-muted-foreground">{label}</span>
       <span className="font-medium">{value}</span>
     </div>
+  );
+}
+
+const REGIME_COLORS: Record<string, string> = {
+  BULL: "bg-profit/15 text-profit border-profit/30",
+  BEAR: "bg-loss/15 text-loss border-loss/30",
+  CRISIS: "bg-destructive/20 text-destructive border-destructive/40",
+  RECOVERY: "bg-warning/15 text-warning border-warning/30",
+};
+
+function MarketContextCard({ context }: { context: MarketContext }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Market context — {context.benchmarkSymbol} benchmark</CardTitle>
+        <CardDescription>
+          Is this stock&apos;s performance driven by the broader market, or is it company-specific?
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Stat label="Avg beta (90d)" value={context.avgBeta.toFixed(2)} />
+          <Stat label="Avg correlation" value={context.avgCorrelation.toFixed(2)} />
+          <Stat
+            label="Alpha vs market"
+            value={formatPercent(context.alpha, 1)}
+            tone={context.alpha >= 0 ? "profit" : "loss"}
+          />
+          <Stat
+            label="Current regime"
+            value={context.currentRegime}
+            tone={context.currentRegime === "BULL" ? "profit" : context.currentRegime === "CRISIS" || context.currentRegime === "BEAR" ? "loss" : undefined}
+          />
+          <Stat label={`${context.benchmarkSymbol} return`} value={formatPercent(context.benchmarkReturn)} tone={context.benchmarkReturn >= 0 ? "profit" : "loss"} />
+          <Stat label={`${context.benchmarkSymbol} max DD`} value={formatPercent(context.benchmarkMaxDrawdown)} tone="loss" />
+          <Stat
+            label="Systemic drawdown %"
+            value={formatPercent(context.systemicDrawdownPct, 0)}
+          />
+          <Stat
+            label="Drawdowns attributed"
+            value={`${context.drawdownAttributions.length} (${context.drawdownAttributions.filter((d) => d.type === "SYSTEMIC").length} systemic, ${context.drawdownAttributions.filter((d) => d.type === "IDIOSYNCRATIC").length} company-specific)`}
+          />
+        </div>
+
+        <div className="rounded-md border bg-muted/30 p-3 text-sm leading-relaxed">
+          {context.summary}
+        </div>
+
+        {context.regimes.length > 1 && (
+          <div>
+            <p className="mb-2 text-xs font-medium text-muted-foreground">Market regime timeline</p>
+            <div className="flex flex-wrap gap-1.5">
+              {context.regimes.map((r, i) => (
+                <div
+                  key={i}
+                  className={cn("rounded border px-2 py-1 text-xs", REGIME_COLORS[r.type] ?? "bg-muted text-muted-foreground border-border")}
+                  title={r.description}
+                >
+                  <span className="font-medium">{r.type}</span>
+                  <span className="ml-1 opacity-70">
+                    {r.startDate.slice(0, 7)}–{r.endDate.slice(0, 7)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {context.drawdownAttributions.length > 0 && (
+          <div>
+            <p className="mb-2 text-xs font-medium text-muted-foreground">Drawdown attribution ({">"}10% stock drawdowns)</p>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Period</TableHead>
+                    <TableHead className="text-right">Stock DD</TableHead>
+                    <TableHead className="text-right">Market DD</TableHead>
+                    <TableHead className="text-right">Systemic %</TableHead>
+                    <TableHead>Type</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {context.drawdownAttributions.map((d, i) => (
+                    <TableRow key={i}>
+                      <TableCell className="whitespace-nowrap text-xs">
+                        {d.startDate.slice(0, 10)} → {d.endDate.slice(0, 10)}
+                      </TableCell>
+                      <TableCell className="text-right text-loss">{formatPercent(d.stockDrawdown)}</TableCell>
+                      <TableCell className="text-right">{formatPercent(d.marketDrawdown)}</TableCell>
+                      <TableCell className="text-right">{formatPercent(d.systemicFraction, 0)}</TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={
+                            d.type === "SYSTEMIC" ? "secondary" :
+                            d.type === "IDIOSYNCRATIC" ? "loss" : "warning"
+                          }
+                        >
+                          {d.type === "SYSTEMIC" ? "Market-driven" : d.type === "IDIOSYNCRATIC" ? "Company-specific" : "Mixed"}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            <div className="mt-2 space-y-1">
+              {context.drawdownAttributions.map((d, i) => (
+                <p key={i} className="text-xs text-muted-foreground">
+                  <span className={cn(
+                    "font-medium",
+                    d.type === "SYSTEMIC" && "text-secondary",
+                    d.type === "IDIOSYNCRATIC" && "text-loss",
+                    d.type === "MIXED" && "text-warning",
+                  )}>
+                    {d.startDate.slice(0, 10)}:
+                  </span>{" "}
+                  {d.description}
+                </p>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
