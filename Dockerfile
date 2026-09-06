@@ -29,10 +29,12 @@ FROM node:22-alpine AS runner
 
 WORKDIR /app
 
-RUN apk add --no-cache openssl postgresql16 postgresql16-client && corepack enable && corepack prepare pnpm@10 --activate
+RUN apk add --no-cache openssl netcat-openbsd && corepack enable && corepack prepare pnpm@10 --activate
 
 ENV NODE_ENV=production
-ENV DATABASE_URL=postgresql://opc:opc_dev_password@localhost:5432/opc?schema=public
+# DATABASE_URL must be provided by docker-compose or Coolify env vars.
+# It points to the separate db container (e.g. postgresql://opc:opc_dev_password@db:5432/opc?schema=public)
+ENV DATABASE_URL=postgresql://opc:opc_dev_password@db:5432/opc?schema=public
 
 # Copy only what we need
 COPY --from=builder /app/package.json ./
@@ -46,10 +48,6 @@ COPY --from=builder /app/node_modules ./node_modules
 # Copy startup script
 COPY start.sh ./
 RUN chmod +x start.sh
-
-# Persist PostgreSQL data across container rebuilds.
-# Coolify will mount a named volume here automatically when it sees this directive.
-VOLUME /var/lib/postgresql/data
 
 EXPOSE 3000
 
