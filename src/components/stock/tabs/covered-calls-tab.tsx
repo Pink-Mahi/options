@@ -9,6 +9,7 @@ import { ExpirationPicker } from "@/components/stock/expiration-picker";
 import { useOptionChain } from "@/components/stock/use-option-chain";
 import { CoveredCallDetail } from "@/components/stock/covered-call-detail";
 import { FieldWithHelp, TableHeadWithHelp, EXPLAINERS } from "@/components/stock/field-with-help";
+import { StrategyPresetSelector } from "@/components/stock/strategy-preset-selector";
 import { scanCoveredCalls } from "@/features/options/scanner";
 import { calculateAssignmentProbability, type AssignmentProbability } from "@/lib/calculations/historical";
 import { cn, formatCurrency, formatPercent, formatNumber } from "@/lib/utils";
@@ -138,7 +139,35 @@ export function CoveredCallsTab({
           <CardTitle className="text-base">Covered call scanner</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <ExpirationPicker expirations={data.expirations} value={expiration} onChange={onExpirationChange} />
+          <div className="flex items-center justify-between gap-2">
+            <ExpirationPicker expirations={data.expirations} value={expiration} onChange={onExpirationChange} />
+            <StrategyPresetSelector
+              strategyType="COVERED_CALL"
+              currentFilters={{
+                minDelta: 0,
+                maxDelta: typeof maxDelta === "number" ? maxDelta / 100 : 1,
+                minDte: 0,
+                maxDte: 365,
+                minYieldPct: typeof minYield === "number" ? minYield : 0,
+                minOtmPercent: typeof minOtm === "number" ? minOtm : 0,
+                minDiscountPct: 0,
+                excludeEarnings,
+              }}
+              onApply={(p) => {
+                setMaxDelta(Math.round(p.maxDelta * 100));
+                setMinYield(p.minYieldPct);
+                setMinOtm(p.minOtmPercent);
+                setExcludeEarnings(p.excludeEarnings);
+                if (data.expirations.length > 0) {
+                  const suitable = data.expirations
+                    .filter((e) => e.daysToExpiration >= p.minDte && e.daysToExpiration <= p.maxDte)
+                    .sort((a, b) => Math.abs(a.daysToExpiration - (p.minDte + p.maxDte) / 2) - Math.abs(b.daysToExpiration - (p.minDte + p.maxDte) / 2));
+                  if (suitable[0]) onExpirationChange(suitable[0].expirationDate);
+                }
+              }}
+              onSave={() => {}}
+            />
+          </div>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <FieldWithHelp label="Objective" help={EXPLAINERS.objective}>
               <Select value={objective} onChange={(e) => setObjective(e.target.value as ScannerObjective)}>

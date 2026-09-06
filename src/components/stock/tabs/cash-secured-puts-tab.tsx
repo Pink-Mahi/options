@@ -9,6 +9,7 @@ import { ExpirationPicker } from "@/components/stock/expiration-picker";
 import { useOptionChain } from "@/components/stock/use-option-chain";
 import { CashSecuredPutDetail } from "@/components/stock/cash-secured-put-detail";
 import { FieldWithHelp, TableHeadWithHelp, EXPLAINERS } from "@/components/stock/field-with-help";
+import { StrategyPresetSelector } from "@/components/stock/strategy-preset-selector";
 import { scanCashSecuredPuts } from "@/features/options/scanner";
 import { calculateAssignmentProbability, type AssignmentProbability } from "@/lib/calculations/historical";
 import { cn, formatCurrency, formatPercent, formatNumber } from "@/lib/utils";
@@ -81,7 +82,34 @@ export function CashSecuredPutsTab({
       <Card>
         <CardHeader><CardTitle className="text-base">Cash-secured put scanner</CardTitle></CardHeader>
         <CardContent className="space-y-3">
-          <ExpirationPicker expirations={data.expirations} value={expiration} onChange={onExpirationChange} />
+          <div className="flex items-center justify-between gap-2">
+            <ExpirationPicker expirations={data.expirations} value={expiration} onChange={onExpirationChange} />
+            <StrategyPresetSelector
+              strategyType="CASH_SECURED_PUT"
+              currentFilters={{
+                minDelta: 0,
+                maxDelta: typeof maxDelta === "number" ? maxDelta / 100 : 1,
+                minDte: 0,
+                maxDte: 365,
+                minYieldPct: 0,
+                minOtmPercent: 0,
+                minDiscountPct: typeof minDiscount === "number" ? minDiscount : 0,
+                excludeEarnings,
+              }}
+              onApply={(p) => {
+                setMaxDelta(Math.round(p.maxDelta * 100));
+                setMinDiscount(p.minDiscountPct);
+                setExcludeEarnings(p.excludeEarnings);
+                if (data.expirations.length > 0) {
+                  const suitable = data.expirations
+                    .filter((e) => e.daysToExpiration >= p.minDte && e.daysToExpiration <= p.maxDte)
+                    .sort((a, b) => Math.abs(a.daysToExpiration - (p.minDte + p.maxDte) / 2) - Math.abs(b.daysToExpiration - (p.minDte + p.maxDte) / 2));
+                  if (suitable[0]) onExpirationChange(suitable[0].expirationDate);
+                }
+              }}
+              onSave={() => {}}
+            />
+          </div>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <FieldWithHelp label="Target effective entry ($)" help={EXPLAINERS.targetEntry}>
               <Input type="number" min={0} step="0.01" placeholder="optional" value={targetEntry} onChange={(e) => setTargetEntry(e.target.value === "" ? "" : Math.max(0, Number(e.target.value)))} />

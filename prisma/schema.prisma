@@ -65,6 +65,7 @@ model Portfolio {
   transactions Transaction[]
   aiChats     AiConversation[]
   backtestPresets BacktestPreset[]
+  strategyPresets StrategyPreset[]
 
   @@unique([userId])
 }
@@ -355,6 +356,31 @@ model BacktestPreset {
   buyBackPct      Decimal  @db.Decimal(10, 4) @default(0)
   minPutYieldPct  Decimal  @db.Decimal(10, 4) @default(0)
   rollOnAssignment Boolean @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  @@index([portfolioId])
+}
+
+// ---------------------------------------------------------------------------
+// Strategy Presets (scanner filter ranges for covered calls / CSPs)
+// ---------------------------------------------------------------------------
+
+model StrategyPreset {
+  id              String   @id @default(cuid())
+  portfolioId     String
+  name            String
+  strategyType    String   // COVERED_CALL, CASH_SECURED_PUT, ANY
+  minDelta        Decimal  @db.Decimal(5, 4) @default(0)
+  maxDelta        Decimal  @db.Decimal(5, 4) @default(1)
+  minDte          Int      @default(0)
+  maxDte          Int      @default(365)
+  minYieldPct     Decimal  @db.Decimal(10, 4) @default(0)
+  minOtmPercent   Decimal  @db.Decimal(10, 4) @default(0)
+  minDiscountPct  Decimal  @db.Decimal(10, 4) @default(0)
+  excludeEarnings Boolean  @default(true)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
