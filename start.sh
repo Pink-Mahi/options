@@ -13,7 +13,7 @@ chown -R postgres:postgres /var/lib/postgresql
 
 # Initialize PostgreSQL if not already done
 if [ ! -f "$PGDATA/PG_VERSION" ]; then
-  echo "Initializing PostgreSQL..."
+  echo "Initializing PostgreSQL (fresh database — no existing data found at $PGDATA)..."
   su postgres -c "initdb -D $PGDATA --auth=trust"
 
   cat >> "$PGDATA/postgresql.conf" <<EOF
@@ -24,6 +24,8 @@ dynamic_shared_memory_type = mmap
 shared_buffers = 32MB
 max_connections = 50
 EOF
+else
+  echo "Found existing PostgreSQL data at $PGDATA — volume persisted correctly."
 fi
 
 # Start PostgreSQL
