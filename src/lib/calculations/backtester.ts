@@ -57,6 +57,11 @@ export interface BacktestConfig {
    */
   minCallPremiumYieldPct?: number;
   /**
+   * Minimum put premium yield as a decimal (e.g. 0.015 = 1.5% of spot).
+   * Same GTC limit-order simulation as calls, but for put entries.
+   */
+  minPutPremiumYieldPct?: number;
+  /**
    * When true, accumulated premium is reinvested into 100-share lots whenever
    * the stock trades below the current cost basis — averaging the basis down so
    * future calls can be sold at lower strikes without violating the floor.
@@ -69,6 +74,12 @@ export interface BacktestConfig {
    * capital for the next cycle sooner. 0/undefined = hold to expiration.
    */
   buyBackPct?: number;
+  /**
+   * When true, ITM calls at expiration are rolled (bought back at intrinsic)
+   * instead of being called away. Shares stay held and the wheel stays in
+   * the call phase.
+   */
+  rollOnAssignment?: boolean;
 }
 
 export interface BacktestTrade {
@@ -137,6 +148,14 @@ export interface BacktestResult {
   endingCostBasis: number | null;
   /** Cycles closed early by the GTC buy-back order */
   earlyCloseCount: number;
+  /** Put cycles where the GTC limit never filled */
+  putNoFillCount: number;
+  /** Fraction of put cycles that filled */
+  putFillRate: number;
+  /** Average premium yield across filled put trades */
+  avgPutPremiumYield: number;
+  /** Calls rolled (bought back ITM) instead of called away */
+  rolledCount: number;
   warnings: string[];
 }
 
@@ -308,6 +327,10 @@ export function runBacktest(
   let averagedDownLots = 0;
   let reinvestedPremium = 0;
   let earlyCloseCount = 0;
+  let putNoFillCount = 0;
+  let putCycleCount = 0;
+  let putPremiumYieldSum = 0;
+  let rolledCount = 0;
 
   const firstPrice = prices[0];
   const lastPrice = prices[prices.length - 1];
@@ -343,6 +366,10 @@ export function runBacktest(
       endingShares: 0,
       endingCostBasis: null,
       earlyCloseCount: 0,
+      putNoFillCount: 0,
+      putFillRate: 1,
+      avgPutPremiumYield: 0,
+      rolledCount: 0,
       warnings: ["No price data available."],
     };
   }
@@ -420,7 +447,7 @@ export function runBacktest(
     if (!closePrice) { idx++; continue; }
     const closeSpot = closePrice.adjustedClose;
 
-    // --- GTC limit-order simulation for calls ---------------------------
+    // --- GTC limit-order simulation for calls AND puts ------------------
     // When a minimum premium yield is set, the order only fills if the modeled
     // premium reaches the floor. Re-check every 5 trading days within the
     // cycle; a later fill means a shorter remaining DTE.
@@ -432,8 +459,11 @@ export function runBacktest(
     let flooredByMin = false;
     let filled = true;
 
-    const yieldFloor = config.minCallPremiumYieldPct ?? 0;
-    if (optionType === "CALL" && yieldFloor > 0) {
+    const yieldFloor =
+      optionType === "CALL"
+        ? (config.minCallPremiumYieldPct ?? 0)
+        : (config.minPutPremiumYieldPct ?? 0);
+    if (yieldFloor > 0) {
       filled = false;
       for (let tryIdx = idx; tryIdx <= closeIdx; tryIdx += 5) {
         const tryPoint = prices[tryIdx];
@@ -449,7 +479,7 @@ export function runBacktest(
           tryIv,
           remainingDte,
           config.riskFreeRate,
-          "CALL",
+          optionType,
           config.deltaTarget,
           config.strikeInterval,
           minCallStrike,
@@ -496,6 +526,9 @@ export function runBacktest(
     if (optionType === "CALL") {
       callCycleCount++;
       if (filled) callPremiumYieldSum += premiumYield;
+    } else {
+      putCycleCount++;
+      if (filled) putPremiumYieldSum += premiumYield;
     }
 
     // --- GTC buy-back simulation ------------------------------------------
@@ -538,11 +571,16 @@ export function runBacktest(
     let outcome: BacktestTrade["outcome"];
     let cyclePnl = premiumIncome; // start with premium
 
-    if (optionType === "CALL" && !filled) {
-      // GTC limit never reached — shares sat uncovered for the cycle.
+    if (!filled) {
+      // GTC limit never reached — no position opened this cycle.
       outcome = "NO_FILL";
       noFillCount++;
-      cyclePnl = (effCloseSpot - openSpot) * sharesHeld;
+      if (optionType === "CALL") {
+        cyclePnl = (effCloseSpot - openSpot) * sharesHeld;
+      } else {
+        putNoFillCount++;
+        cyclePnl = 0;
+      }
     } else if (exitPremium != null) {
       // Bought back early at the GTC target — keep the difference as profit.
       outcome = "BOUGHT_BACK";
@@ -561,12 +599,20 @@ export function runBacktest(
       const stockExit = effCloseSpot > strike ? strike : effCloseSpot;
       const stockPnl = (stockExit - openSpot) * sharesHeld;
       if (effCloseSpot > strike) {
-        outcome = "CALLED_AWAY";
-        calledAwayCount++;
-        cyclePnl = premiumIncome + stockPnl;
-        if (config.strategy === "WHEEL") {
-          sharesHeld = 0; // shares called away
-          shareCostBasis = null;
+        if (config.rollOnAssignment) {
+          // Roll: buy back ITM call at intrinsic, keep shares
+          outcome = "ROLLED";
+          rolledCount++;
+          const buybackCost = (effCloseSpot - strike) * 100 * activeContracts;
+          cyclePnl = premiumIncome - buybackCost + (effCloseSpot - openSpot) * sharesHeld;
+        } else {
+          outcome = "CALLED_AWAY";
+          calledAwayCount++;
+          cyclePnl = premiumIncome + stockPnl;
+          if (config.strategy === "WHEEL") {
+            sharesHeld = 0;
+            shareCostBasis = null;
+          }
         }
       } else {
         outcome = "EXPIRED_WORTHLESS";
@@ -689,6 +735,11 @@ export function runBacktest(
     endingShares: sharesHeld,
     endingCostBasis: shareCostBasis,
     earlyCloseCount,
+    putNoFillCount,
+    putFillRate: putCycleCount > 0 ? (putCycleCount - putNoFillCount) / putCycleCount : 1,
+    avgPutPremiumYield:
+      putCycleCount - putNoFillCount > 0 ? putPremiumYieldSum / (putCycleCount - putNoFillCount) : 0,
+    rolledCount,
     warnings,
   };
 }

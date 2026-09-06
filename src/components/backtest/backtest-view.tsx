@@ -1,9 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   Line,
   LineChart,
+  Bar,
+  BarChart,
   CartesianGrid,
   ResponsiveContainer,
   Tooltip,
@@ -24,6 +26,7 @@ interface BacktestResponse extends BacktestResult {
   startingCapital: number;
   underlyingPrice: number;
   modelCaveat: string;
+  _label?: string;
 }
 
 const STRATEGY_LABELS: Record<StrategyOption, string> = {
@@ -45,7 +48,10 @@ export function BacktestView() {
   const [fillAssumption, setFillAssumption] = useState<"bid" | "mid">("bid");
   const [startingCapital, setStartingCapital] = useState(0);
   const [buyBackPct, setBuyBackPct] = useState(0);
+  const [minPutYieldPct, setMinPutYieldPct] = useState(0);
+  const [rollOnAssignment, setRollOnAssignment] = useState(false);
   const [result, setResult] = useState<BacktestResponse | null>(null);
+  const [comparisonResults, setComparisonResults] = useState<BacktestResponse[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -69,6 +75,8 @@ export function BacktestView() {
           fillAssumption,
           startingCapital: startingCapital > 0 ? startingCapital : undefined,
           buyBackPct: buyBackPct > 0 ? buyBackPct / 100 : undefined,
+          minPutPremiumYieldPct: minPutYieldPct > 0 ? minPutYieldPct / 100 : undefined,
+          rollOnAssignment,
         }),
         cache: "no-store",
       });
@@ -78,6 +86,7 @@ export function BacktestView() {
         setResult(null);
       } else {
         setResult(data);
+        setComparisonResults([]);
       }
     } catch (e) {
       setError((e as Error).message);
@@ -86,6 +95,82 @@ export function BacktestView() {
       setLoading(false);
     }
   }
+
+  async function runComparison() {
+    if (!symbol) return;
+    setLoading(true);
+    setError(null);
+    setComparisonResults([]);
+    const variants = [
+      { label: "30 DTE", dte: 30, buyBack: 0, delta: deltaTarget },
+      { label: "45 DTE", dte: 45, buyBack: 0, delta: deltaTarget },
+      { label: "45 DTE + 50% buy-back", dte: 45, buyBack: 50, delta: deltaTarget },
+    ];
+    try {
+      const results: BacktestResponse[] = [];
+      for (const v of variants) {
+        const res = await fetch("/api/backtest", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            symbol, strategy, range, contracts, fillAssumption,
+            neverSellCallBelowCostBasis: neverBelowCost,
+            averageDownWithPremium: averageDown,
+            startingCapital: startingCapital > 0 ? startingCapital : undefined,
+            minCallPremiumYieldPct: minYieldPct > 0 ? minYieldPct / 100 : undefined,
+            minPutPremiumYieldPct: minPutYieldPct > 0 ? minPutYieldPct / 100 : undefined,
+            rollOnAssignment,
+            deltaTarget: v.delta,
+            dteTarget: v.dte,
+            buyBackPct: v.buyBack > 0 ? v.buyBack / 100 : undefined,
+          }),
+          cache: "no-store",
+        });
+        const data = await res.json();
+        if (res.ok) results.push({ ...data, _label: v.label } as BacktestResponse);
+      }
+      setComparisonResults(results);
+      if (results.length > 0) setResult(results[0]!);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function exportCsv() {
+    if (!result) return;
+    const rows = [
+      ["Open", "Close", "Type", "Strike", "Stock Open", "Stock Close", "Premium", "Yield", "Outcome", "Cycle P/L", "Days", "Contracts"],
+      ...result.trades.map((t) => [
+        t.openDate, t.closeDate, t.optionType, t.strike.toFixed(2),
+        t.stockPriceAtOpen.toFixed(2), t.stockPriceAtClose.toFixed(2),
+        t.premiumIncome.toFixed(2), (t.premiumYield * 100).toFixed(2) + "%",
+        t.outcome, t.cyclePnl.toFixed(2), String(t.daysHeld), String(t.contracts),
+      ]),
+    ];
+    const csv = rows.map((r) => r.map((c) => `"${c}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `backtest_${result.symbol}_${Date.now()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const monthlyData = useMemo(() => {
+    if (!result) return [];
+    const map = new Map<string, { month: string; premium: number; pnl: number }>();
+    for (const t of result.trades) {
+      const month = t.openDate.slice(0, 7);
+      const entry = map.get(month) ?? { month, premium: 0, pnl: 0 };
+      entry.premium += t.premiumIncome;
+      entry.pnl += t.cyclePnl;
+      map.set(month, entry);
+    }
+    return Array.from(map.values()).sort((a, b) => a.month.localeCompare(b.month));
+  }, [result]);
 
   const chartData =
     result?.equityCurve.map((p) => ({
@@ -224,6 +309,19 @@ export function BacktestView() {
               />
             </div>
             <div className="space-y-1.5">
+              <Label htmlFor="bt-minputyield">Min put yield %</Label>
+              <Input
+                id="bt-minputyield"
+                type="number"
+                step="0.1"
+                min="0"
+                max="20"
+                value={minPutYieldPct}
+                onChange={(e) => setMinPutYieldPct(Number(e.target.value))}
+                placeholder="0 = off"
+              />
+            </div>
+            <div className="space-y-1.5">
               <Label htmlFor="bt-buyback">Buy back at % profit</Label>
               <Input
                 id="bt-buyback"
@@ -251,10 +349,18 @@ export function BacktestView() {
               </select>
             </div>
           </div>
-          <div className="mt-4">
+          <div className="mt-4 flex gap-2">
             <Button onClick={run} disabled={loading || !symbol}>
               {loading ? "Running…" : "Run backtest"}
             </Button>
+            <Button variant="outline" onClick={runComparison} disabled={loading || !symbol}>
+              {loading ? "Running…" : "Compare variants"}
+            </Button>
+            {result && (
+              <Button variant="outline" onClick={exportCsv}>
+                Export CSV
+              </Button>
+            )}
           </div>
           <div className="mt-4 rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground space-y-1.5">
             <p>
@@ -300,12 +406,25 @@ export function BacktestView() {
               the modeled mid (realistic for marketable orders). <em>Mid</em> assumes perfect fills —
               optimistic. <strong className="text-foreground">Starting capital</strong> sets the buy &amp;
               hold comparison baseline; leave blank to auto-size it to the position (spot × contracts × 100).
-            </p>
-            <p>
               <strong className="text-foreground">Buy back at % profit</strong> places a GTC order to close
               the option early once it decays to that profit level. E.g. 50 = if you sold for $2.00, the order
               buys back at $1.00 — you keep $1.00 and free the position for a new cycle immediately. Checked
               daily. Common values: 50% (Tastytrade-style), 75%, 80%. 0 = hold to expiration.
+            </p>
+            <p>
+              <strong className="text-foreground">Min put yield %</strong> is the same GTC limit-order
+              simulation, but for put entries. If the premium you collect is too low relative to the stock
+              price, you skip selling that put and keep your cash on the sidelines.
+            </p>
+            <p>
+              <strong className="text-foreground">Roll on assignment</strong> — instead of letting shares
+              be called away when a call finishes ITM, the backtester buys back the call at intrinsic value
+              and keeps holding the shares. This avoids resetting the wheel to the put phase.
+            </p>
+            <p>
+              <strong className="text-foreground">Compare variants</strong> runs three parameter sets
+              side by side (30 DTE, 45 DTE, 45 DTE + 50% buy-back) so you can see the effect of each tweak
+              in one click.
             </p>
           </div>
           <label className="mt-3 flex items-start gap-2 text-sm cursor-pointer">
@@ -335,6 +454,21 @@ export function BacktestView() {
               <span className="text-muted-foreground">
                 When the stock is below your cost basis, spend collected premium on 100-share lots — lowering
                 your floor and increasing the number of calls you can sell.
+              </span>
+            </span>
+          </label>
+          <label className="mt-2 flex items-start gap-2 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={rollOnAssignment}
+              onChange={(e) => setRollOnAssignment(e.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-input"
+            />
+            <span>
+              <strong>Roll on assignment.</strong>{" "}
+              <span className="text-muted-foreground">
+                When a call finishes ITM, buy it back at intrinsic value instead of letting shares be called
+                away. Keeps you in the covered-call phase.
               </span>
             </span>
           </label>
@@ -415,6 +549,24 @@ export function BacktestView() {
                 value={`${result.earlyCloseCount} of ${result.totalCycles}`}
               />
             )}
+            {result.rolledCount > 0 && (
+              <Stat
+                label="Calls rolled"
+                value={String(result.rolledCount)}
+              />
+            )}
+            {result.putNoFillCount > 0 && (
+              <Stat
+                label="Put GTC not filled"
+                value={`${result.putNoFillCount} (${formatPercent(1 - result.putFillRate, 0)} of puts)`}
+              />
+            )}
+            {result.avgPutPremiumYield > 0 && (
+              <Stat
+                label="Avg put yield"
+                value={formatPercent(result.avgPutPremiumYield, 2)}
+              />
+            )}
             <Stat label="Expired worthless" value={formatPercent(result.winRate)} />
             <Stat label="Total premium" value={formatCurrency(result.totalPremiumIncome, 0)} />
             <Stat
@@ -422,6 +574,72 @@ export function BacktestView() {
               value={result.sharpeRatio != null ? result.sharpeRatio.toFixed(2) : "—"}
             />
           </div>
+
+          {monthlyData.length > 1 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Monthly premium income</CardTitle>
+                <CardDescription>Premium collected and cycle P/L by month.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="h-64 w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={monthlyData} margin={{ top: 8, right: 16, bottom: 8, left: 8 }}>
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <XAxis dataKey="month" tick={{ fontSize: 11 }} minTickGap={30} />
+                      <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `$${Number(v).toFixed(0)}`} />
+                      <Tooltip formatter={(v) => formatCurrency(Number(v), 0)} contentStyle={{ fontSize: 12 }} />
+                      <Legend wrapperStyle={{ fontSize: 12 }} />
+                      <Bar dataKey="premium" name="Premium" fill="#2563eb" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="pnl" name="Cycle P/L" fill="#16a34a" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {comparisonResults.length > 1 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Comparison</CardTitle>
+                <CardDescription>Side-by-side results for different parameter sets.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Variant</TableHead>
+                      <TableHead className="text-right">Return</TableHead>
+                      <TableHead className="text-right">Annualized</TableHead>
+                      <TableHead className="text-right">Premium</TableHead>
+                      <TableHead className="text-right">Cycles</TableHead>
+                      <TableHead className="text-right">Max DD</TableHead>
+                      <TableHead className="text-right">Sharpe</TableHead>
+                      <TableHead className="text-right">Win rate</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {comparisonResults.map((r, i) => (
+                      <TableRow key={i} className={cn("cursor-pointer", r === result && "bg-muted/50")} onClick={() => setResult(r)}>
+                        <TableCell className="font-medium">{r._label ?? `Variant ${i + 1}`}</TableCell>
+                        <TableCell className={cn("text-right", r.strategyReturn >= 0 ? "text-profit" : "text-loss")}>
+                          {formatPercent(r.strategyReturn)}
+                        </TableCell>
+                        <TableCell className="text-right">{formatPercent(r.strategyAnnualizedReturn)}</TableCell>
+                        <TableCell className="text-right">{formatCurrency(r.totalPremiumIncome, 0)}</TableCell>
+                        <TableCell className="text-right">{r.totalCycles}</TableCell>
+                        <TableCell className="text-right text-loss">{formatPercent(r.maxDrawdown)}</TableCell>
+                        <TableCell className="text-right">{r.sharpeRatio != null ? r.sharpeRatio.toFixed(2) : "—"}</TableCell>
+                        <TableCell className="text-right">{formatPercent(r.winRate)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                <p className="mt-2 text-xs text-muted-foreground">Click a row to view its full results above.</p>
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardHeader>
@@ -499,6 +717,15 @@ export function BacktestView() {
                 )}
                 {result.earlyCloseCount > 0 && (
                   <Row label="Closed early (buy-back)" value={String(result.earlyCloseCount)} />
+                )}
+                {result.rolledCount > 0 && (
+                  <Row label="Calls rolled" value={String(result.rolledCount)} />
+                )}
+                {result.putNoFillCount > 0 && (
+                  <Row label="Put GTC not filled" value={String(result.putNoFillCount)} />
+                )}
+                {result.avgPutPremiumYield > 0 && (
+                  <Row label="Avg put yield / cycle" value={formatPercent(result.avgPutPremiumYield, 2)} />
                 )}
               </CardContent>
             </Card>

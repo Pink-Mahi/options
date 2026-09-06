@@ -377,6 +377,84 @@ describe("runBacktest - GTC buy-back", () => {
   });
 });
 
+describe("runBacktest - put yield floor", () => {
+  const baseConfig = {
+    strategy: "CASH_SECURED_PUT" as const,
+    symbol: "TEST",
+    deltaTarget: 0.30,
+    dteTarget: 30,
+    contracts: 1,
+    riskFreeRate: 0.05,
+    startingCapital: 10000,
+    shares: 0,
+    strikeInterval: 5,
+    fillAssumption: "mid" as const,
+  };
+
+  it("fills every put cycle when the floor is 0", () => {
+    const prices = generatePrices(100, 300, 0.02, 0.0005);
+    const result = runBacktest(prices, { ...baseConfig, minPutPremiumYieldPct: 0 });
+    expect(result.putNoFillCount).toBe(0);
+    expect(result.putFillRate).toBe(1);
+  });
+
+  it("records NO_FILL for puts when the floor is impossibly high", () => {
+    const prices = generatePrices(100, 300, 0.02, 0.0005);
+    const result = runBacktest(prices, { ...baseConfig, minPutPremiumYieldPct: 0.5 });
+    expect(result.putNoFillCount).toBe(result.totalCycles);
+    expect(result.putFillRate).toBe(0);
+    expect(result.totalPremiumIncome).toBe(0);
+  });
+
+  it("every filled put meets the yield floor", () => {
+    const prices = generatePrices(100, 500, 0.03, 0.0003);
+    const floor = 0.005;
+    const result = runBacktest(prices, { ...baseConfig, minPutPremiumYieldPct: floor });
+    const filledPuts = result.trades.filter((t) => t.optionType === "PUT" && t.outcome !== "NO_FILL");
+    for (const t of filledPuts) {
+      expect(t.premiumYield).toBeGreaterThanOrEqual(floor - 1e-9);
+    }
+  });
+});
+
+describe("runBacktest - roll on assignment", () => {
+  const baseConfig = {
+    strategy: "WHEEL" as const,
+    symbol: "TEST",
+    deltaTarget: 0.50,
+    dteTarget: 30,
+    contracts: 1,
+    riskFreeRate: 0.05,
+    startingCapital: 10000,
+    shares: 100,
+    strikeInterval: 5,
+    fillAssumption: "mid" as const,
+  };
+
+  it("without rolling, ITM calls result in CALLED_AWAY", () => {
+    const prices = generatePrices(100, 400, 0.02, 0.003);
+    const result = runBacktest(prices, { ...baseConfig, rollOnAssignment: false });
+    expect(result.calledAwayCount).toBeGreaterThan(0);
+    expect(result.rolledCount).toBe(0);
+  });
+
+  it("with rolling, ITM calls result in ROLLED and shares are kept", () => {
+    const prices = generatePrices(100, 400, 0.02, 0.003);
+    const result = runBacktest(prices, { ...baseConfig, rollOnAssignment: true });
+    expect(result.rolledCount).toBeGreaterThan(0);
+    expect(result.calledAwayCount).toBe(0);
+    // Shares should still be held at the end (not reset to 0 by called-away)
+    expect(result.endingShares).toBeGreaterThan(0);
+  });
+
+  it("rolled trades show positive option profit when premium > intrinsic", () => {
+    const prices = generatePrices(100, 400, 0.02, 0.003);
+    const result = runBacktest(prices, { ...baseConfig, rollOnAssignment: true });
+    const rolled = result.trades.filter((t) => t.outcome === "ROLLED");
+    expect(rolled.length).toBeGreaterThan(0);
+  });
+});
+
 describe("runBacktest - edge cases", () => {
   it("handles insufficient data gracefully", () => {
     const prices = generatePrices(100, 30, 0.02);

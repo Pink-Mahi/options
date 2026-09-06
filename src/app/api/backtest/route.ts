@@ -66,11 +66,14 @@ export async function POST(req: Request) {
       neverSellCallBelowCostBasis: body.neverSellCallBelowCostBasis === true,
       minCallPremiumYieldPct:
         Number(body.minCallPremiumYieldPct) > 0 ? Number(body.minCallPremiumYieldPct) : undefined,
+      minPutPremiumYieldPct:
+        Number(body.minPutPremiumYieldPct) > 0 ? Number(body.minPutPremiumYieldPct) : undefined,
       averageDownWithPremium: body.averageDownWithPremium === true,
       buyBackPct:
         Number(body.buyBackPct) > 0 && Number(body.buyBackPct) < 1
           ? Number(body.buyBackPct)
           : undefined,
+      rollOnAssignment: body.rollOnAssignment === true,
     });
 
     return NextResponse.json({
