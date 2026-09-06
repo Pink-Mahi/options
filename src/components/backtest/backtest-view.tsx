@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Line,
   LineChart,
@@ -20,6 +20,25 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { cn, formatCurrency, formatPercent } from "@/lib/utils";
 import type { BacktestResult } from "@/lib/calculations/backtester";
 import type { MarketContext } from "@/lib/calculations/market-context";
+import { Save, Bookmark, Trash2, ChevronDown } from "lucide-react";
+
+interface PresetData {
+  id: string;
+  name: string;
+  strategy: string;
+  deltaTarget: number;
+  dteTarget: number;
+  range: string;
+  contracts: number;
+  neverBelowCost: boolean;
+  minYieldPct: number;
+  averageDown: boolean;
+  fillAssumption: "bid" | "mid";
+  startingCapital: number;
+  buyBackPct: number;
+  minPutYieldPct: number;
+  rollOnAssignment: boolean;
+}
 
 type StrategyOption = "COVERED_CALL" | "CASH_SECURED_PUT" | "WHEEL";
 
@@ -55,6 +74,73 @@ export function BacktestView() {
   const [comparisonResults, setComparisonResults] = useState<BacktestResponse[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [presets, setPresets] = useState<PresetData[]>([]);
+  const [presetName, setPresetName] = useState("");
+  const [showSaveInput, setShowSaveInput] = useState(false);
+  const [presetDropdownOpen, setPresetDropdownOpen] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/backtest-presets", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data) => setPresets(data.presets ?? []))
+      .catch(() => {});
+  }, []);
+
+  function savePreset() {
+    const name = presetName.trim();
+    if (!name) return;
+    fetch("/api/backtest-presets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name,
+        strategy,
+        deltaTarget,
+        dteTarget,
+        range,
+        contracts,
+        neverBelowCost,
+        minYieldPct,
+        averageDown,
+        fillAssumption,
+        startingCapital,
+        buyBackPct,
+        minPutYieldPct,
+        rollOnAssignment,
+      }),
+    })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.preset) {
+          setPresets((prev) => [data.preset, ...prev]);
+          setPresetName("");
+          setShowSaveInput(false);
+        }
+      });
+  }
+
+  function loadPreset(p: PresetData) {
+    setStrategy(p.strategy as StrategyOption);
+    setDeltaTarget(p.deltaTarget);
+    setDteTarget(p.dteTarget);
+    setRange(p.range);
+    setContracts(p.contracts);
+    setNeverBelowCost(p.neverBelowCost);
+    setMinYieldPct(p.minYieldPct);
+    setAverageDown(p.averageDown);
+    setFillAssumption(p.fillAssumption);
+    setStartingCapital(p.startingCapital);
+    setBuyBackPct(p.buyBackPct);
+    setMinPutYieldPct(p.minPutYieldPct);
+    setRollOnAssignment(p.rollOnAssignment);
+    setPresetDropdownOpen(false);
+  }
+
+  function deletePreset(id: string) {
+    fetch(`/api/backtest-presets?id=${id}`, { method: "DELETE" })
+      .then(() => setPresets((prev) => prev.filter((p) => p.id !== id)))
+      .catch(() => {});
+  }
 
   async function run() {
     setLoading(true);
@@ -356,7 +442,7 @@ export function BacktestView() {
               </select>
             </div>
           </div>
-          <div className="mt-4 flex gap-2">
+          <div className="mt-4 flex flex-wrap gap-2">
             <Button onClick={run} disabled={loading || !symbol}>
               {loading ? "Running…" : "Run backtest"}
             </Button>
@@ -368,6 +454,81 @@ export function BacktestView() {
                 Export CSV
               </Button>
             )}
+
+            {/* Preset save/load */}
+            <div className="relative ml-auto">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setPresetDropdownOpen(!presetDropdownOpen)}
+                className="gap-1.5"
+              >
+                <Bookmark className="h-4 w-4" />
+                Presets
+                <ChevronDown className="h-3 w-3" />
+              </Button>
+              {presetDropdownOpen && (
+                <div className="absolute right-0 top-full z-50 mt-1 w-72 rounded-md border bg-popover p-2 shadow-md">
+                  {presets.length > 0 ? (
+                    <div className="max-h-60 space-y-1 overflow-y-auto">
+                      {presets.map((p) => (
+                        <div
+                          key={p.id}
+                          className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-secondary"
+                        >
+                          <button
+                            onClick={() => loadPreset(p)}
+                            className="flex-1 text-left"
+                          >
+                            <div className="font-medium">{p.name}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {p.strategy.replace(/_/g, " ")} · {p.dteTarget}d · Δ{p.deltaTarget} · {p.range}
+                            </div>
+                          </button>
+                          <button
+                            onClick={() => deletePreset(p.id)}
+                            className="text-muted-foreground hover:text-loss"
+                            aria-label="Delete preset"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="px-2 py-3 text-xs text-muted-foreground">
+                      No saved presets yet. Configure your parameters and save them for quick reuse across stocks.
+                    </p>
+                  )}
+                  <div className="mt-2 border-t pt-2">
+                    {showSaveInput ? (
+                      <div className="flex gap-1.5">
+                        <Input
+                          value={presetName}
+                          onChange={(e) => setPresetName(e.target.value)}
+                          placeholder="Preset name…"
+                          className="h-8 text-sm"
+                          onKeyDown={(e) => e.key === "Enter" && savePreset()}
+                        />
+                        <Button size="sm" onClick={savePreset} disabled={!presetName.trim()}>
+                          <Save className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="w-full gap-1.5"
+                        onClick={() => setShowSaveInput(true)}
+                      >
+                        <Save className="h-3.5 w-3.5" />
+                        Save current settings
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
           <div className="mt-4 rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground space-y-1.5">
             <p>

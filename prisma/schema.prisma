@@ -64,6 +64,7 @@ model Portfolio {
   watchlist   Watchlist[]
   transactions Transaction[]
   aiChats     AiConversation[]
+  backtestPresets BacktestPreset[]
 
   @@unique([userId])
 }
@@ -331,4 +332,33 @@ model NotificationLog {
 
   @@index([userId, sentAt])
   @@index([alertId])
+}
+
+// ---------------------------------------------------------------------------
+// Saved Backtest Presets
+// ---------------------------------------------------------------------------
+
+model BacktestPreset {
+  id              String   @id @default(cuid())
+  portfolioId     String
+  name            String
+  strategy        String   // COVERED_CALL, CASH_SECURED_PUT, WHEEL
+  deltaTarget     Decimal  @db.Decimal(5, 4)
+  dteTarget       Int
+  range           String   // 1y, 3y, 5y, 10y, max
+  contracts       Int
+  neverBelowCost  Boolean  @default(true)
+  minYieldPct     Decimal  @db.Decimal(10, 4) @default(0)
+  averageDown     Boolean  @default(false)
+  fillAssumption  String   @default("bid") // bid, mid
+  startingCapital Int      @default(0)
+  buyBackPct      Decimal  @db.Decimal(10, 4) @default(0)
+  minPutYieldPct  Decimal  @db.Decimal(10, 4) @default(0)
+  rollOnAssignment Boolean @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  portfolio Portfolio @relation(fields: [portfolioId], references: [id], onDelete: Cascade)
+
+  @@index([portfolioId])
 }
