@@ -27,8 +27,10 @@ import {
 } from "./provider";
 import { TradierProvider } from "./tradier";
 import { MockProvider } from "./mock";
+import { YahooFinanceProvider } from "./yahoo";
 
 let _provider: MarketDataProvider | null = null;
+let _yahooProvider: YahooFinanceProvider | null = null;
 
 export function getProvider(): MarketDataProvider {
   if (_provider) return _provider;
@@ -55,6 +57,12 @@ export function getProvider(): MarketDataProvider {
   return _provider;
 }
 
+/** Yahoo Finance provider (lazy singleton) — used as fallback for historical prices. */
+function getYahooProvider(): YahooFinanceProvider {
+  if (!_yahooProvider) _yahooProvider = new YahooFinanceProvider();
+  return _yahooProvider;
+}
+
 /** True when the active provider is the mock/demo fallback. */
 export function isDemoMode(): boolean {
   return getProvider().name === "mock";
@@ -73,14 +81,44 @@ export async function getQuote(
   params: QuoteParams,
 ): Promise<MarketDataResult<Quote>> {
   const key = `quote:${params.symbol.toUpperCase()}`;
-  return cached(key, "quote", () => getProvider().getQuote(params));
+  return cached(key, "quote", async () => {
+    const provider = getProvider();
+    try {
+      return await provider.getQuote(params);
+    } catch (primaryError) {
+      if (provider.name === "mock") throw primaryError;
+      try {
+        console.warn(`[market-data] Primary provider (${provider.name}) failed for quote: ${(primaryError as Error).message}. Falling back to Yahoo Finance.`);
+        return await getYahooProvider().getQuote(params);
+      } catch {
+        throw primaryError;
+      }
+    }
+  });
 }
 
 export async function getHistoricalPrices(
   params: HistoricalPricesParams,
 ): Promise<MarketDataResult<HistoricalPriceSeries>> {
   const key = `historical:${params.symbol.toUpperCase()}:${params.range}`;
-  return cached(key, "historical", () => getProvider().getHistoricalPrices(params));
+  return cached(key, "historical", async () => {
+    const provider = getProvider();
+    try {
+      return await provider.getHistoricalPrices(params);
+    } catch (primaryError) {
+      // If the primary provider fails, try Yahoo Finance as a fallback.
+      // This improves reliability for backtesting and historical analysis.
+      // Skip fallback if the primary is mock (demo mode) — mock always succeeds.
+      if (provider.name === "mock") throw primaryError;
+      try {
+        console.warn(`[market-data] Primary provider (${provider.name}) failed for historical prices: ${(primaryError as Error).message}. Falling back to Yahoo Finance.`);
+        return await getYahooProvider().getHistoricalPrices(params);
+      } catch (yahooError) {
+        // Both providers failed — throw the original error.
+        throw primaryError;
+      }
+    }
+  });
 }
 
 export async function getExpirations(
