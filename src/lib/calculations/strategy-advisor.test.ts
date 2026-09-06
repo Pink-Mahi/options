@@ -109,17 +109,90 @@ describe("scoreStockQuality", () => {
     expect(result.explanation.length).toBeGreaterThan(20);
   });
 
-  it("component scores sum to weighted total within tolerance", () => {
+  it("component scores sum to weighted total within tolerance (no backtest)", () => {
     const points = makePriceSeries(100, 300, 0.0005, 0.01);
     const result = scoreStockQuality(points, "neutral", 0);
-    const weights = { trend: 0.25, stability: 0.20, growth: 0.25, drawdownRisk: 0.15, technicalBias: 0.15 };
+    // When no backtest is provided, income weight is 0 and old weights apply
+    const weights = { trend: 0.25, stability: 0.20, growth: 0.25, drawdownRisk: 0.15, technicalBias: 0.15, income: 0 };
     const expected =
       result.components.trend * weights.trend +
       result.components.stability * weights.stability +
       result.components.growth * weights.growth +
       result.components.drawdownRisk * weights.drawdownRisk +
-      result.components.technicalBias * weights.technicalBias;
+      result.components.technicalBias * weights.technicalBias +
+      result.components.incomePerformance * weights.income;
     expect(result.total).toBeCloseTo(expected, 0);
+  });
+
+  it("component scores sum to weighted total with backtest data", () => {
+    const points = makePriceSeries(100, 300, 0.0005, 0.01);
+    const bt = {
+      strategy: "Covered Call",
+      strategyReturn: 0.35,
+      buyHoldReturn: 0.20,
+      outperformance: 0.15,
+      totalPremiumIncome: 5000,
+      avgPremiumPerCycle: 150,
+      maxDrawdown: -0.15,
+      sharpeRatio: 1.2,
+      totalCycles: 30,
+      winRate: 0.8,
+      avgCallPremiumYield: 0.035,
+      startingCapital: 10000,
+    };
+    const result = scoreStockQuality(points, "neutral", 0, bt);
+    // With backtest, income gets 0.40 weight and others are reduced
+    const weights = { trend: 0.15, stability: 0.10, growth: 0.15, drawdownRisk: 0.10, technicalBias: 0.10, income: 0.40 };
+    const expected =
+      result.components.trend * weights.trend +
+      result.components.stability * weights.stability +
+      result.components.growth * weights.growth +
+      result.components.drawdownRisk * weights.drawdownRisk +
+      result.components.technicalBias * weights.technicalBias +
+      result.components.incomePerformance * weights.income;
+    expect(result.total).toBeCloseTo(expected, 0);
+  });
+
+  it("income performance score rewards high outperformance and premium yield", () => {
+    const points = makePriceSeries(100, 300, 0.0005, 0.01);
+    const goodBt = {
+      strategy: "Covered Call",
+      strategyReturn: 0.40,
+      buyHoldReturn: 0.15,
+      outperformance: 0.25,
+      totalPremiumIncome: 8000,
+      avgPremiumPerCycle: 200,
+      maxDrawdown: -0.10,
+      sharpeRatio: 1.5,
+      totalCycles: 40,
+      winRate: 0.85,
+      avgCallPremiumYield: 0.04,
+      startingCapital: 10000,
+    };
+    const result = scoreStockQuality(points, "neutral", 0, goodBt);
+    expect(result.components.incomePerformance).toBeGreaterThan(70);
+    expect(result.strengths.some(s => s.includes("outperformed"))).toBe(true);
+  });
+
+  it("income performance score penalizes weak premium and underperformance", () => {
+    const points = makePriceSeries(100, 300, 0.0005, 0.01);
+    const weakBt = {
+      strategy: "Covered Call",
+      strategyReturn: -0.05,
+      buyHoldReturn: 0.20,
+      outperformance: -0.25,
+      totalPremiumIncome: 500,
+      avgPremiumPerCycle: 15,
+      maxDrawdown: -0.45,
+      sharpeRatio: -0.3,
+      totalCycles: 30,
+      winRate: 0.3,
+      avgCallPremiumYield: 0.005,
+      startingCapital: 10000,
+    };
+    const result = scoreStockQuality(points, "neutral", 0, weakBt);
+    expect(result.components.incomePerformance).toBeLessThan(40);
+    expect(result.concerns.some(c => c.includes("underperformed"))).toBe(true);
   });
 });
 
@@ -217,6 +290,54 @@ describe("runStrategyAdvisor", () => {
       expect(result.bestPick.strike).toBeGreaterThan(0);
       expect(result.bestPick.explanation).toBeTruthy();
     }
+  });
+
+  it("upgrades verdict when backtest shows strong income performance", () => {
+    const points = makePriceSeries(100, 300, 0.0005, 0.03); // higher vol = lower stability score
+    const chains = [makeChain(100, 45, 100)];
+    const strongBt = {
+      strategy: "Covered Call",
+      strategyReturn: 0.35,
+      buyHoldReturn: 0.15,
+      outperformance: 0.20,
+      totalPremiumIncome: 6000,
+      avgPremiumPerCycle: 180,
+      maxDrawdown: -0.12,
+      sharpeRatio: 1.3,
+      totalCycles: 35,
+      winRate: 0.8,
+      avgCallPremiumYield: 0.035,
+      startingCapital: 10000,
+    };
+    const withoutBt = runStrategyAdvisor("TEST", 100, points, chains, "neutral", 0, 1);
+    const withBt = runStrategyAdvisor("TEST", 100, points, chains, "neutral", 0, 1, strongBt);
+    // With strong backtest, verdict should be at least as good or better
+    const verdictRank = { avoid: 0, caution: 1, buy: 2, strong_buy: 3 };
+    expect(verdictRank[withBt.verdict]).toBeGreaterThanOrEqual(verdictRank[withoutBt.verdict]);
+    expect(withBt.backtest).not.toBeNull();
+    expect(withBt.backtest?.strategyReturn).toBe(0.35);
+  });
+
+  it("includes backtest summary in output when provided", () => {
+    const points = makePriceSeries(100, 300, 0.0005, 0.01);
+    const chains = [makeChain(100, 45, 100)];
+    const bt = {
+      strategy: "Covered Call",
+      strategyReturn: 0.20,
+      buyHoldReturn: 0.15,
+      outperformance: 0.05,
+      totalPremiumIncome: 3000,
+      avgPremiumPerCycle: 100,
+      maxDrawdown: -0.18,
+      sharpeRatio: 0.8,
+      totalCycles: 30,
+      winRate: 0.7,
+      avgCallPremiumYield: 0.025,
+      startingCapital: 10000,
+    };
+    const result = runStrategyAdvisor("TEST", 100, points, chains, "bullish", 50, 1, bt);
+    expect(result.backtest).not.toBeNull();
+    expect(result.summary.some(s => s.includes("Backtested"))).toBe(true);
   });
 
   it("handles empty chains gracefully", () => {

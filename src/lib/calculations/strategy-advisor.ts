@@ -23,12 +23,29 @@ import {
 } from "./historical";
 import { clamp } from "./core";
 import { calculateCoveredCall } from "./covered-call";
+import { formatCurrency, formatPercent } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export type StockQualityGrade = "A" | "B" | "C" | "D" | "F";
+
+/** Summary of a backtested options income strategy on this stock. */
+export interface BacktestSummary {
+  strategy: string;
+  strategyReturn: number;
+  buyHoldReturn: number;
+  outperformance: number;
+  totalPremiumIncome: number;
+  avgPremiumPerCycle: number;
+  maxDrawdown: number;
+  sharpeRatio: number | null;
+  totalCycles: number;
+  winRate: number;
+  avgCallPremiumYield: number;
+  startingCapital: number;
+}
 
 export interface StockQualityScore {
   /** 0-100 overall quality score */
@@ -41,6 +58,7 @@ export interface StockQualityScore {
     growth: number;
     drawdownRisk: number;
     technicalBias: number;
+    incomePerformance: number;
   };
   /** Plain-English explanation of the score */
   explanation: string;
@@ -95,6 +113,8 @@ export interface StrategyAdvisorResult {
   dteComparisons: DTEComparison[];
   /** Best overall call pick across all DTEs */
   bestPick: CallRecommendation | null;
+  /** Backtested income strategy performance (null when not available) */
+  backtest: BacktestSummary | null;
   /** Plain-English summary for the user */
   summary: string[];
   warnings: string[];
@@ -108,6 +128,7 @@ export function scoreStockQuality(
   points: HistoricalPricePoint[],
   technicalBias: "bullish" | "bearish" | "neutral",
   technicalScore: number,
+  backtest?: BacktestSummary | null,
 ): StockQualityScore {
   const strengths: string[] = [];
   const concerns: string[] = [];
@@ -152,14 +173,59 @@ export function scoreStockQuality(
   if (technicalBias === "bullish") strengths.push(`Technical indicators are net bullish (score: ${technicalScore.toFixed(0)})`);
   else if (technicalBias === "bearish") concerns.push(`Technical indicators are net bearish (score: ${technicalScore.toFixed(0)})`);
 
-  // Weighted total
-  const weights = { trend: 0.25, stability: 0.20, growth: 0.25, drawdownRisk: 0.15, technicalBias: 0.15 };
+  // 6. Income performance: how well does the options strategy actually work?
+  // This is the key bridge between "good stock" and "good income stock."
+  // High-vol stocks that generate fat premiums score well here even if
+  // stability/drawdown scores are low.
+  let incomeScore = 50; // default when no backtest data
+  if (backtest) {
+    incomeScore = 50;
+    // Reward outperformance vs buy-and-hold (up to +25)
+    if (backtest.outperformance > 0.10) incomeScore += 25;
+    else if (backtest.outperformance > 0) incomeScore += 15;
+    else if (backtest.outperformance < -0.10) incomeScore -= 15;
+    // Reward absolute strategy return (up to +15)
+    if (backtest.strategyReturn > 0.30) incomeScore += 15;
+    else if (backtest.strategyReturn > 0.10) incomeScore += 10;
+    else if (backtest.strategyReturn < 0) incomeScore -= 10;
+    // Reward premium yield (up to +10)
+    if (backtest.avgCallPremiumYield > 0.03) incomeScore += 10;
+    else if (backtest.avgCallPremiumYield > 0.015) incomeScore += 5;
+    // Penalize excessive drawdowns (up to -15)
+    if (Math.abs(backtest.maxDrawdown) > 0.40) incomeScore -= 15;
+    else if (Math.abs(backtest.maxDrawdown) > 0.25) incomeScore -= 8;
+    // Reward good Sharpe (up to +10)
+    if (backtest.sharpeRatio != null && backtest.sharpeRatio > 1.0) incomeScore += 10;
+    else if (backtest.sharpeRatio != null && backtest.sharpeRatio > 0.5) incomeScore += 5;
+    incomeScore = clamp(incomeScore, 0, 100);
+
+    if (backtest.outperformance > 0.05) {
+      strengths.push(`Backtested covered-call strategy outperformed buy-and-hold by ${(backtest.outperformance * 100).toFixed(0)}% — the income strategy adds real value on this stock`);
+    }
+    if (backtest.avgCallPremiumYield > 0.025) {
+      strengths.push(`Average premium yield of ${(backtest.avgCallPremiumYield * 100).toFixed(1)}% per cycle — strong income generation`);
+    }
+    if (backtest.outperformance < -0.05) {
+      concerns.push(`Backtested covered-call strategy underperformed buy-and-hold by ${(Math.abs(backtest.outperformance) * 100).toFixed(0)}% — you'd be better off just holding the shares`);
+    }
+    if (backtest.avgCallPremiumYield < 0.01) {
+      concerns.push(`Average premium yield of only ${(backtest.avgCallPremiumYield * 100).toFixed(1)}% per cycle — weak income generation`);
+    }
+  }
+
+  // Weighted total — income performance gets significant weight when available
+  // because it measures what the user actually cares about: does the strategy work?
+  const hasBacktest = backtest != null;
+  const weights = hasBacktest
+    ? { trend: 0.15, stability: 0.10, growth: 0.15, drawdownRisk: 0.10, technicalBias: 0.10, income: 0.40 }
+    : { trend: 0.25, stability: 0.20, growth: 0.25, drawdownRisk: 0.15, technicalBias: 0.15, income: 0 };
   const total = Math.round(
     trendScore * weights.trend +
     volScore * weights.stability +
     growthScore * weights.growth +
     ddScore * weights.drawdownRisk +
-    biasScore * weights.technicalBias,
+    biasScore * weights.technicalBias +
+    incomeScore * weights.income,
   );
 
   const grade: StockQualityGrade = total >= 80 ? "A" : total >= 65 ? "B" : total >= 50 ? "C" : total >= 35 ? "D" : "F";
@@ -186,6 +252,7 @@ export function scoreStockQuality(
       growth: growthScore,
       drawdownRisk: ddScore,
       technicalBias: biasScore,
+      incomePerformance: incomeScore,
     },
     explanation,
     strengths,
@@ -310,11 +377,12 @@ export function runStrategyAdvisor(
   technicalBias: "bullish" | "bearish" | "neutral",
   technicalScore: number,
   contracts = 1,
+  backtest?: BacktestSummary | null,
 ): StrategyAdvisorResult {
   const warnings: string[] = [];
 
-  // 1. Score stock quality
-  const quality = scoreStockQuality(historical, technicalBias, technicalScore);
+  // 1. Score stock quality (now includes backtest income performance)
+  const quality = scoreStockQuality(historical, technicalBias, technicalScore, backtest);
 
   // 2. Analyze all calls across all chains
   const allCalls: CallRecommendation[] = [];
@@ -385,21 +453,35 @@ export function runStrategyAdvisor(
     }
   }
 
-  // 5. Verdict
+  // 5. Verdict — now considers backtest income performance alongside stock quality
   let verdict: StrategyAdvisorResult["verdict"];
   let verdictExplanation: string;
 
-  if (quality.grade === "A" || quality.grade === "B") {
-    verdict = quality.grade === "A" ? "strong_buy" : "buy";
-    verdictExplanation = quality.grade === "A"
-      ? "This is a high-quality stock worth owning for the long term. Selling covered calls against it is like renting out a house in a great neighborhood — you collect income while holding a quality asset. Use the recommended call below to start generating premium."
+  // When backtest data is available, upgrade stocks with strong income performance
+  // even if stock quality alone would rate them lower. The key question is:
+  // does the options strategy actually work on this stock?
+  const incomeScore = quality.components.incomePerformance;
+  const hasStrongIncome = backtest != null && incomeScore >= 65;
+  const hasWeakIncome = backtest != null && incomeScore < 40;
+
+  if (quality.grade === "A" || (quality.grade === "B" && hasStrongIncome)) {
+    verdict = "strong_buy";
+    verdictExplanation = hasStrongIncome && quality.grade === "B"
+      ? "While this stock has some quality concerns, the backtested covered-call strategy performs well — strong premium generation and solid outperformance vs buy-and-hold. The income strategy works here. Use the recommended call below to start generating premium."
+      : "This is a high-quality stock worth owning for the long term. Selling covered calls against it is like renting out a house in a great neighborhood — you collect income while holding a quality asset. Use the recommended call below to start generating premium.";
+  } else if (quality.grade === "B" || (quality.grade === "C" && hasStrongIncome)) {
+    verdict = "buy";
+    verdictExplanation = hasStrongIncome && quality.grade === "C"
+      ? "This stock has mixed quality signals, but the backtested income strategy generates good premium and outperforms buy-and-hold. If you're comfortable with the volatility, the covered-call strategy works. Monitor the concerns below."
       : "This stock is good enough to own and sell calls against. It's not perfect, but the fundamentals support long-term ownership. Sell covered calls to generate income while you hold, but keep an eye on the concerns listed below.";
-  } else if (quality.grade === "C") {
+  } else if (quality.grade === "C" || (quality.grade === "D" && !hasWeakIncome)) {
     verdict = "caution";
     verdictExplanation = "This stock is a mixed bag. You can sell premium against it, but be aware that the quality is mediocre. If you wouldn't want to own it for 10 years at this price, don't sell covered calls on it — assignment could leave you holding a declining asset.";
   } else {
     verdict = "avoid";
-    verdictExplanation = "This stock does not meet quality thresholds for a long-term buy-and-hold with covered calls. The risk of holding it long-term outweighs the premium income. Find a better stock — there are plenty of quality names to sell calls against.";
+    verdictExplanation = hasWeakIncome
+      ? "This stock does not meet quality thresholds AND the backtested covered-call strategy underperforms buy-and-hold. The premium income doesn't compensate for the risk. Find a better stock — there are plenty of quality names to sell calls against."
+      : "This stock does not meet quality thresholds for a long-term buy-and-hold with covered calls. The risk of holding it long-term outweighs the premium income. Find a better stock — there are plenty of quality names to sell calls against.";
   }
 
   // 6. Plain-English summary
@@ -422,6 +504,16 @@ export function runStrategyAdvisor(
     summary.push("No suitable calls found in the available option chains. Try a different expiration date or check back when liquidity improves.");
   }
 
+  if (backtest) {
+    const btLines: string[] = [];
+    btLines.push(`Backtested covered-call strategy (45 DTE, 0.30 delta, ${backtest.totalCycles} cycles): ${formatPercent(backtest.strategyReturn)} strategy return vs ${formatPercent(backtest.buyHoldReturn)} buy-and-hold (${backtest.outperformance >= 0 ? "+" : ""}${formatPercent(backtest.outperformance)} outperformance).`);
+    btLines.push(`Total premium income: ${formatCurrency(backtest.totalPremiumIncome, 0)} across ${backtest.totalCycles} cycles (${formatCurrency(backtest.avgPremiumPerCycle, 2)}/cycle avg). Average yield: ${formatPercent(backtest.avgCallPremiumYield, 2)}/cycle.`);
+    if (backtest.sharpeRatio != null) {
+      btLines.push(`Sharpe ratio: ${backtest.sharpeRatio.toFixed(2)}. Max drawdown: ${formatPercent(backtest.maxDrawdown)}. Win rate: ${formatPercent(backtest.winRate)}.`);
+    }
+    summary.push(btLines.join(" "));
+  }
+
   if (recommendedDTE.reason) {
     summary.push(`Recommended DTE: ${recommendedDTE.dte} days. ${recommendedDTE.reason}`);
   }
@@ -439,6 +531,7 @@ export function runStrategyAdvisor(
     recommendedDTE,
     dteComparisons,
     bestPick,
+    backtest: backtest ?? null,
     summary,
     warnings,
   };

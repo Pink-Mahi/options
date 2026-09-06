@@ -11,6 +11,8 @@ import { getSessionUser } from "@/lib/auth";
 import { getHistoricalPrices, getQuote, getExpirations, getOptionChain } from "@/features/market-data/service";
 import { computeAllIndicators } from "@/lib/calculations/indicators";
 import { runStrategyAdvisor } from "@/lib/calculations/strategy-advisor";
+import { runBacktest } from "@/lib/calculations/backtester";
+import type { BacktestSummary } from "@/lib/calculations/strategy-advisor";
 
 export const dynamic = "force-dynamic";
 
@@ -71,6 +73,41 @@ export async function POST(req: Request) {
       .filter((c): c is NonNullable<typeof c> => c != null)
       .map(c => c.data);
 
+    // Run a quick backtest (covered call, 45 DTE, 0.30 delta) to see how
+    // the income strategy actually performs on this stock.
+    let backtestSummary: BacktestSummary | null = null;
+    try {
+      const bt = runBacktest(points, {
+        strategy: "COVERED_CALL",
+        symbol,
+        deltaTarget: 0.30,
+        dteTarget: 45,
+        contracts,
+        riskFreeRate: 0.04,
+        startingCapital: currentPrice * 100 * contracts,
+        shares: 100 * contracts,
+        strikeInterval: 5,
+        fillAssumption: "bid",
+        neverSellCallBelowCostBasis: true,
+      });
+      backtestSummary = {
+        strategy: "Covered Call (45 DTE, 0.30 delta)",
+        strategyReturn: bt.strategyReturn,
+        buyHoldReturn: bt.buyHoldReturn,
+        outperformance: bt.outperformance,
+        totalPremiumIncome: bt.totalPremiumIncome,
+        avgPremiumPerCycle: bt.avgPremiumPerCycle,
+        maxDrawdown: bt.maxDrawdown,
+        sharpeRatio: bt.sharpeRatio,
+        totalCycles: bt.totalCycles,
+        winRate: bt.winRate,
+        avgCallPremiumYield: bt.avgCallPremiumYield,
+        startingCapital: currentPrice * 100 * contracts,
+      };
+    } catch {
+      // Backtest may fail for stocks with insufficient data — advisor still works without it
+    }
+
     const result = runStrategyAdvisor(
       symbol,
       currentPrice,
@@ -79,6 +116,7 @@ export async function POST(req: Request) {
       technicalBias,
       technicalScore,
       contracts,
+      backtestSummary,
     );
 
     return NextResponse.json({

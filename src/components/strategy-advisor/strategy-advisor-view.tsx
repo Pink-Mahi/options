@@ -13,7 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Home, AlertTriangle, Info, CheckCircle2, XCircle, HelpCircle, TrendingUp, TrendingDown } from "lucide-react";
+import { Home, AlertTriangle, Info, CheckCircle2, XCircle, HelpCircle, TrendingUp, TrendingDown, Activity } from "lucide-react";
 import { cn, formatCurrency, formatNumber, formatPercent } from "@/lib/utils";
 
 interface CallRecommendation {
@@ -44,10 +44,25 @@ interface DTEComparison {
 interface StockQualityScore {
   total: number;
   grade: string;
-  components: { trend: number; stability: number; growth: number; drawdownRisk: number; technicalBias: number };
+  components: { trend: number; stability: number; growth: number; drawdownRisk: number; technicalBias: number; incomePerformance: number };
   explanation: string;
   strengths: string[];
   concerns: string[];
+}
+
+interface BacktestSummary {
+  strategy: string;
+  strategyReturn: number;
+  buyHoldReturn: number;
+  outperformance: number;
+  totalPremiumIncome: number;
+  avgPremiumPerCycle: number;
+  maxDrawdown: number;
+  sharpeRatio: number | null;
+  totalCycles: number;
+  winRate: number;
+  avgCallPremiumYield: number;
+  startingCapital: number;
 }
 
 interface StrategyAdvisorResponse {
@@ -59,6 +74,7 @@ interface StrategyAdvisorResponse {
   recommendedDTE: { dte: number; reason: string };
   dteComparisons: DTEComparison[];
   bestPick: CallRecommendation | null;
+  backtest: BacktestSummary | null;
   summary: string[];
   warnings: string[];
   dataSource?: string;
@@ -269,12 +285,13 @@ export function StrategyAdvisorView() {
           </div>
 
           {/* Component scores */}
-          <div className="grid gap-3 sm:grid-cols-5">
+          <div className="grid gap-3 sm:grid-cols-6">
             <ScoreBar label="Trend" value={data.quality.components.trend} hint="Price vs 200-day avg" />
             <ScoreBar label="Stability" value={data.quality.components.stability} hint="Low volatility = stable" />
             <ScoreBar label="Growth" value={data.quality.components.growth} hint="Returns over 1y/3y/5y" />
             <ScoreBar label="Drawdown Risk" value={data.quality.components.drawdownRisk} hint="Worst historical decline" />
             <ScoreBar label="Technical Bias" value={data.quality.components.technicalBias} hint="15+ indicator signal" />
+            <ScoreBar label="Income Performance" value={data.quality.components.incomePerformance} hint="Backtested strategy returns" />
           </div>
 
           {/* Strengths & Concerns */}
@@ -304,6 +321,83 @@ export function StrategyAdvisorView() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Backtest Income Performance */}
+      {data.backtest && (
+        <Card className="border-2 border-blue-500/20 bg-blue-500/5">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Activity className="h-5 w-5 text-blue-500" />
+              Backtested Income Performance
+            </CardTitle>
+            <p className="text-xs text-muted-foreground">
+              {data.backtest.strategy} — simulated over {data.backtest.totalCycles} cycles using real historical prices
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <MetricCard
+                label="Strategy Return"
+                value={formatPercent(data.backtest.strategyReturn, 2)}
+                hint="Total return from covered calls"
+                valueClass={data.backtest.strategyReturn >= 0 ? "text-profit" : "text-loss"}
+              />
+              <MetricCard
+                label="Buy & Hold Return"
+                value={formatPercent(data.backtest.buyHoldReturn, 2)}
+                hint="Just holding shares"
+                valueClass={data.backtest.buyHoldReturn >= 0 ? "text-profit" : "text-loss"}
+              />
+              <MetricCard
+                label="Outperformance"
+                value={`${data.backtest.outperformance >= 0 ? "+" : ""}${formatPercent(data.backtest.outperformance, 2)}`}
+                hint="Strategy minus buy & hold"
+                valueClass={data.backtest.outperformance >= 0 ? "text-profit" : "text-loss"}
+              />
+              <MetricCard
+                label="Total Premium"
+                value={formatCurrency(data.backtest.totalPremiumIncome, 0)}
+                hint={`Across ${data.backtest.totalCycles} cycles`}
+              />
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <MetricCard
+                label="Avg Premium / Cycle"
+                value={formatCurrency(data.backtest.avgPremiumPerCycle, 2)}
+                hint="Income per option cycle"
+              />
+              <MetricCard
+                label="Avg Yield / Cycle"
+                value={formatPercent(data.backtest.avgCallPremiumYield, 2)}
+                hint="Premium as % of stock price"
+              />
+              <MetricCard
+                label="Max Drawdown"
+                value={formatPercent(data.backtest.maxDrawdown, 2)}
+                hint="Worst peak-to-trough decline"
+                valueClass="text-loss"
+              />
+              <MetricCard
+                label="Sharpe Ratio"
+                value={data.backtest.sharpeRatio != null ? data.backtest.sharpeRatio.toFixed(2) : "—"}
+                hint="Risk-adjusted return per cycle"
+              />
+            </div>
+            <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 p-3">
+              <p className="text-sm text-muted-foreground">
+                {(() => {
+                  const bt = data.backtest!;
+                  if (bt.outperformance >= 0) {
+                    const degree = bt.outperformance > 0.05 ? "significantly" : "slightly";
+                    return "The covered-call strategy " + degree + " outperformed buy-and-hold on this stock. The income from selling calls added real value — you collected " + formatCurrency(bt.totalPremiumIncome, 0) + " in premium while still participating in stock appreciation.";
+                  }
+                  return "The covered-call strategy underperformed buy-and-hold by " + formatPercent(Math.abs(bt.outperformance), 2) + " on this stock. The premium income (" + formatCurrency(bt.totalPremiumIncome, 0) + ") didn't fully compensate for the capped upside. This is common on stocks that rally sharply — calls get called away, limiting gains.";
+                })()}
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Best Pick */}
       {data.bestPick && (
