@@ -6,7 +6,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - DATABASE_URL=postgresql://opc:${DB_PASSWORD:-opc_dev_password}@db:5432/opc?schema=public
+      - DATABASE_URL=postgresql://opc:opc_dev_password@127.0.0.1:5432/opc?schema=public
       - MARKET_DATA_PROVIDER=${MARKET_DATA_PROVIDER:-tradier}
       - MARKET_DATA_API_KEY=${MARKET_DATA_API_KEY}
       - TRADIER_BASE_URL=${TRADIER_BASE_URL:-https://api.tradier.com/v1}
@@ -20,27 +20,4 @@ services:
       - ADMIN_EMAIL=${ADMIN_EMAIL:-}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       - ADMIN_NAME=${ADMIN_NAME:-}
-    depends_on:
-      db:
-        condition: service_healthy
     restart: unless-stopped
-
-  db:
-    image: postgres:16-alpine
-    environment:
-      - POSTGRES_USER=opc
-      - POSTGRES_PASSWORD=${DB_PASSWORD:-opc_dev_password}
-      - POSTGRES_DB=opc
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U opc"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
-
-volumes:
-  pgdata:
