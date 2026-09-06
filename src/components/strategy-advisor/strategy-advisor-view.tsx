@@ -285,7 +285,7 @@ export function StrategyAdvisorView() {
           </div>
 
           {/* Component scores */}
-          <div className="grid gap-3 sm:grid-cols-6">
+          <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
             <ScoreBar label="Trend" value={data.quality.components.trend} hint="Price vs 200-day avg" />
             <ScoreBar label="Stability" value={data.quality.components.stability} hint="Low volatility = stable" />
             <ScoreBar label="Growth" value={data.quality.components.growth} hint="Returns over 1y/3y/5y" />

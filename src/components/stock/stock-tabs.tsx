@@ -26,7 +26,7 @@ export function StockTabs({ data, portfolio }: { data: StockData; portfolio: Por
 
   return (
     <Tabs defaultValue="overview">
-      <TabsList className="flex w-full flex-wrap h-auto">
+      <TabsList className="flex w-full overflow-x-auto flex-nowrap h-auto scrollbar-none">
         <TabsTrigger value="overview">Overview</TabsTrigger>
         <TabsTrigger value="covered-calls">Covered Calls</TabsTrigger>
         <TabsTrigger value="cash-secured-puts">Cash-Secured Puts</TabsTrigger>

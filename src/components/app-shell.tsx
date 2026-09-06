@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Calculator, LayoutDashboard, PieChart, Search, Sparkles, Sun, Moon, Wallet, Layers, Eye, Shield, LogOut, User as UserIcon, KeyRound, History, GitBranch, FlaskConical, Home } from "lucide-react";
+import { Calculator, LayoutDashboard, PieChart, Search, Sparkles, Sun, Moon, Wallet, Layers, Eye, Shield, LogOut, User as UserIcon, KeyRound, History, GitBranch, FlaskConical, Home, MoreHorizontal, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useTheme } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
@@ -38,6 +38,7 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
   const [user, setUser] = useState<SessionUser | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [pwModal, setPwModal] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
 
   useEffect(() => {
     fetch("/api/auth/session", { cache: "no-store" })
@@ -57,6 +58,11 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
     ? [...NAV, { href: "/admin", label: "Admin", icon: Shield }]
     : NAV;
 
+  // Primary nav items for mobile bottom bar (5 max for thumb reach)
+  const PRIMARY_HREFS = ["/", "/search", "/portfolio", "/ai", "/income-planner"];
+  const primaryNav = navItems.filter((n) => PRIMARY_HREFS.includes(n.href));
+  const secondaryNav = navItems.filter((n) => !PRIMARY_HREFS.includes(n.href));
+
   return (
     <div className="flex min-h-screen flex-col">
       <header className="sticky top-0 z-40 border-b bg-background/95 backdrop-blur">
@@ -67,7 +73,9 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
             </span>
             <span className="hidden sm:inline">Option Profit Calculator</span>
           </Link>
-          <nav className="ml-auto flex items-center gap-1">
+
+          {/* Desktop nav */}
+          <nav className="ml-auto hidden items-center gap-1 md:flex">
             {navItems.map((item) => {
               const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
               const Icon = item.icon;
@@ -81,7 +89,7 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
                   )}
                 >
                   <Icon className="h-4 w-4" />
-                  <span className="hidden md:inline">{item.label}</span>
+                  <span>{item.label}</span>
                 </Link>
               );
             })}
@@ -97,7 +105,7 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
                   onClick={() => setMenuOpen(!menuOpen)}
                 >
                   <UserIcon className="h-4 w-4" />
-                  <span className="hidden sm:inline text-xs">{user.name ?? user.email}</span>
+                  <span className="text-xs">{user.name ?? user.email}</span>
                 </Button>
                 {menuOpen && (
                   <div className="absolute right-0 top-full mt-1 w-48 rounded-md border bg-popover p-1 shadow-md">
@@ -125,6 +133,46 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
               </div>
             )}
           </nav>
+
+          {/* Mobile header actions */}
+          <div className="ml-auto flex items-center gap-1 md:hidden">
+            <Button variant="ghost" size="icon" onClick={toggle} aria-label="Toggle theme">
+              {theme === "dark" ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+            </Button>
+            {user && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setMenuOpen(!menuOpen)}
+                aria-label="User menu"
+              >
+                <UserIcon className="h-5 w-5" />
+              </Button>
+            )}
+            {user && menuOpen && (
+              <div className="absolute right-2 top-14 z-50 w-48 rounded-md border bg-popover p-1 shadow-md">
+                <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                  <div className="font-medium text-foreground">{user.name ?? "User"}</div>
+                  <div className="truncate">{user.email}</div>
+                  {user.role === "ADMIN" && (
+                    <span className="mt-0.5 inline-block rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">ADMIN</span>
+                  )}
+                </div>
+                <button
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-secondary"
+                  onClick={() => { setMenuOpen(false); setPwModal(true); }}
+                >
+                  <KeyRound className="h-3.5 w-3.5" /> Change password
+                </button>
+                <button
+                  className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-secondary"
+                  onClick={() => { setMenuOpen(false); handleLogout(); }}
+                >
+                  <LogOut className="h-3.5 w-3.5" /> Sign out
+                </button>
+              </div>
+            )}
+          </div>
         </div>
         {demo && (
           <div className="border-t bg-amber-500/10 px-4 py-1 text-center text-xs text-amber-700 dark:text-amber-300">
@@ -133,10 +181,79 @@ export function AppShell({ children, demo = false }: { children: React.ReactNode
         )}
       </header>
       {pwModal && <ChangePasswordModal onClose={() => setPwModal(false)} />}
-      <main className="container flex-1 py-6">{children}</main>
-      <footer className="border-t py-3 text-center text-xs text-muted-foreground">
+
+      {/* More menu sheet for mobile */}
+      {moreOpen && (
+        <div className="fixed inset-0 z-50 md:hidden" onClick={() => setMoreOpen(false)}>
+          <div className="absolute inset-0 bg-black/40" />
+          <div className="absolute bottom-0 left-0 right-0 rounded-t-xl border-t bg-background p-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-semibold">More</h3>
+              <Button variant="ghost" size="icon" onClick={() => setMoreOpen(false)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {secondaryNav.map((item) => {
+                const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
+                const Icon = item.icon;
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={() => setMoreOpen(false)}
+                    className={cn(
+                      "flex flex-col items-center gap-1.5 rounded-lg p-3 text-xs font-medium transition-colors",
+                      active ? "bg-secondary text-secondary-foreground" : "text-muted-foreground hover:bg-secondary/60",
+                    )}
+                  >
+                    <Icon className="h-5 w-5" />
+                    {item.label}
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <main className="container flex-1 py-4 pb-20 md:py-6 md:pb-6">{children}</main>
+      <footer className="hidden border-t py-3 text-center text-xs text-muted-foreground md:block">
         Educational tool only. Not investment advice. All calculations are estimates from market data and deterministic formulas.
       </footer>
+
+      {/* Mobile bottom navigation */}
+      <nav className="fixed bottom-0 left-0 right-0 z-40 border-t bg-background/95 backdrop-blur md:hidden" style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+        <div className="flex items-stretch justify-around">
+          {primaryNav.map((item) => {
+            const active = pathname === item.href || (item.href !== "/" && pathname.startsWith(item.href));
+            const Icon = item.icon;
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={cn(
+                  "flex flex-1 flex-col items-center gap-0.5 py-2 text-[10px] font-medium transition-colors",
+                  active ? "text-primary" : "text-muted-foreground",
+                )}
+              >
+                <Icon className="h-5 w-5" />
+                {item.label}
+              </Link>
+            );
+          })}
+          <button
+            onClick={() => setMoreOpen(true)}
+            className={cn(
+              "flex flex-1 flex-col items-center gap-0.5 py-2 text-[10px] font-medium transition-colors",
+              moreOpen ? "text-primary" : "text-muted-foreground",
+            )}
+          >
+            <MoreHorizontal className="h-5 w-5" />
+            More
+          </button>
+        </div>
+      </nav>
     </div>
   );
 }

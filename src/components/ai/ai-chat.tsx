@@ -81,21 +81,21 @@ export function AIChat({
   }
 
   return (
-    <div className="flex h-[70vh] flex-col space-y-3">
+    <div className="flex h-[calc(70vh-3.5rem)] flex-col space-y-3 md:h-[70vh]">
       <Card className="flex flex-1 flex-col">
-        <CardHeader className="flex-row items-center justify-between space-y-0">
-          <div className="flex items-center gap-2">
-            <Sparkles className="h-5 w-5 text-muted-foreground" />
-            <div>
-              <CardTitle className="text-base">AI strategy assistant</CardTitle>
-              <CardDescription className="text-xs">
+        <CardHeader className="flex-row items-center justify-between space-y-0 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <Sparkles className="h-5 w-5 shrink-0 text-muted-foreground" />
+            <div className="min-w-0">
+              <CardTitle className="text-sm md:text-base">AI strategy assistant</CardTitle>
+              <CardDescription className="text-xs hidden sm:block">
                 {isStub ? "Demo mode — deterministic stub. Add AI_API_KEY for live AI." : "Live AI with function calling"}
               </CardDescription>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             {!isStub && aiStatus.availableModels.length > 0 && (
-              <div className="flex items-center gap-1">
+              <div className="hidden sm:flex items-center gap-1">
                 <span className="text-xs text-muted-foreground">Model:</span>
                 <div className="relative">
                   <select
