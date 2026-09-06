@@ -9,6 +9,23 @@ export const metadata: Metadata = {
   title: "Option Profit Calculator — AI Options Income & Profit Analyzer",
   description:
     "Analyze covered calls, cash-secured puts, LEAPS, and portfolio income with deterministic calculations and real market data.",
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    title: "OPC",
+    statusBarStyle: "black-translucent",
+  },
+  formatDetection: {
+    telephone: false,
+  },
+};
+
+export const viewport = {
+  themeColor: "#0f172a",
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  userScalable: false,
 };
 
 const SHELL_EXCLUDED_PATHS = ["/login", "/setup"];
