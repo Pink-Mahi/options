@@ -20,9 +20,6 @@ services:
       - ADMIN_EMAIL=${ADMIN_EMAIL:-}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       - ADMIN_NAME=${ADMIN_NAME:-}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+    # NOTE: /var/lib/postgresql/data persistence is managed via Coolify's
+    # Persistent Storage UI mount (named volume), not docker-compose volumes.
     restart: unless-stopped
-
-volumes:
-  pgdata:
