@@ -32,29 +32,41 @@ export interface ThetaDataEODQuote {
   underlyingPrice: number;
 }
 
-/** Actual ThetaData v3 EOD response format. */
-interface ThetaDataEODResponse {
+/**
+ * Actual ThetaData v3 EOD response format. The terminal wraps the payload
+ * array in "response" (verified by smoke test on the bundled JAR); older
+ * docs use "data" — accept both.
+ */
+interface ThetaDataEODEntry {
+  contract: {
+    expiration: string;
+    symbol: string;
+    strike: number;
+    right: string; // "CALL" or "PUT"
+  };
   data: Array<{
-    contract: {
-      expiration: string;
-      symbol: string;
-      strike: number;
-      right: string; // "CALL" or "PUT"
-    };
-    data: Array<{
-      bid: number;
-      ask: number;
-      volume: number;
-      open_interest?: number;
-      close: number;
-      open: number;
-      high: number;
-      low: number;
-      count: number;
-      created: string;
-      last_trade: string;
-    }>;
+    bid: number;
+    ask: number;
+    volume: number;
+    open_interest?: number;
+    close: number;
+    open: number;
+    high: number;
+    low: number;
+    count: number;
+    created: string;
+    last_trade: string;
   }>;
+}
+
+interface ThetaDataEODResponse {
+  response?: ThetaDataEODEntry[];
+  data?: ThetaDataEODEntry[];
+}
+
+/** The v3 terminal returns the payload under "response"; fall back to "data". */
+function extractEntries(json: ThetaDataEODResponse): ThetaDataEODEntry[] {
+  return json.response ?? json.data ?? [];
 }
 
 let _baseUrl: string | null = null;
@@ -129,10 +141,11 @@ export async function fetchEODChain(
   }
 
   const json = (await res.json()) as ThetaDataEODResponse;
-  if (!json.data || !Array.isArray(json.data)) return [];
+  const entries = extractEntries(json);
+  if (entries.length === 0) return [];
 
   const quotes: ThetaDataEODQuote[] = [];
-  for (const entry of json.data) {
+  for (const entry of entries) {
     const contract = entry.contract;
     const eodData = entry.data?.[0];
     if (!contract || !eodData) continue;
@@ -193,10 +206,11 @@ export async function fetchEODContract(
   }
 
   const json = (await res.json()) as ThetaDataEODResponse;
-  if (!json.data || !Array.isArray(json.data)) return [];
+  const entries = extractEntries(json);
+  if (entries.length === 0) return [];
 
   const quotes: ThetaDataEODQuote[] = [];
-  for (const entry of json.data) {
+  for (const entry of entries) {
     const contract = entry.contract;
     const eodData = entry.data?.[0];
     if (!contract || !eodData) continue;
@@ -294,14 +308,15 @@ export async function prefetchEODChains(
         cache.set(date, []);
         continue;
       }
-      if (!json.data || !Array.isArray(json.data)) {
+      const entries = json.response ?? json.data;
+      if (!entries || !Array.isArray(entries)) {
         console.warn(`ThetaData unexpected response shape for ${symbol} on ${date}: ${text.slice(0, 300)}`);
         cache.set(date, []);
         continue;
       }
 
       const quotes: ThetaDataEODQuote[] = [];
-      for (const entry of json.data) {
+      for (const entry of entries) {
         const contract = entry.contract;
         const eodData = entry.data?.[0];
         if (!contract || !eodData) continue;
