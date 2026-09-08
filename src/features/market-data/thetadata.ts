@@ -65,9 +65,18 @@ function getBaseUrl(): string {
   return _baseUrl;
 }
 
-/** Check if ThetaData is configured (terminal running + base URL reachable). */
+/**
+ * Check if ThetaData is configured.
+ * True when: an explicit base URL is set (local dev), an API key is set
+ * (portal mode), or terminal credentials are set (Docker/Coolify mode —
+ * the start script launches the terminal with these creds).
+ */
 export function isThetaDataConfigured(): boolean {
-  return !!process.env.THETADATA_BASE_URL || !!process.env.THETADATA_API_KEY;
+  return (
+    !!process.env.THETADATA_BASE_URL ||
+    !!process.env.THETADATA_API_KEY ||
+    (!!process.env.THETADATA_EMAIL && !!process.env.THETADATA_PASSWORD)
+  );
 }
 
 /** Parse ThetaData right field to our canonical type. */
@@ -230,8 +239,18 @@ export async function prefetchEODChains(
   // Free tier: 30 req/min = ~2s between requests. Paid tiers can lower this
   // via THETADATA_REQ_DELAY_MS (e.g. 200 for Pro).
   const delayMs = Number(process.env.THETADATA_REQ_DELAY_MS ?? 2100);
+  // Abort the whole prefetch after this many consecutive failures — the
+  // terminal is down, and grinding through every date just wastes minutes.
+  let consecutiveFailures = 0;
 
   for (const date of dates) {
+    if (consecutiveFailures >= 3) {
+      console.warn(
+        `[thetadata] Giving up on prefetch after ${consecutiveFailures} consecutive failures — terminal at ${base} is not reachable.`,
+      );
+      break;
+    }
+
     const dateParam = formatDate(date);
 
     const params = new URLSearchParams({
@@ -255,8 +274,10 @@ export async function prefetchEODChains(
       if (!res.ok) {
         console.warn(`ThetaData fetch failed for ${symbol} on ${date}: ${res.status}`);
         cache.set(date, []);
+        consecutiveFailures++;
         continue;
       }
+      consecutiveFailures = 0;
 
       const json = (await res.json()) as ThetaDataEODResponse;
       if (!json.data || !Array.isArray(json.data)) {
@@ -289,8 +310,9 @@ export async function prefetchEODChains(
 
       cache.set(date, quotes);
     } catch (err) {
-      console.warn(`ThetaData fetch error for ${symbol} on ${date}:`, err);
+      console.warn(`ThetaData fetch error for ${symbol} on ${date}: ${(err as Error).message}`);
       cache.set(date, []);
+      consecutiveFailures++;
     }
 
     // Rate limit delay between requests (see THETADATA_REQ_DELAY_MS)

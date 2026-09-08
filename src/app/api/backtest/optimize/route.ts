@@ -220,7 +220,11 @@ export async function POST(req: Request) {
         try {
           realData = await prefetchEODChains(symbol, datesToFetch);
           const withData = Array.from(realData.values()).filter((q) => q.length > 0).length;
-          console.log(`[optimize] ThetaData prefetch complete (${withData}/${datesToFetch.length} dates returned data)`);
+          console.log(`[optimize] ThetaData prefetch complete: ${withData}/${datesToFetch.length} dates returned real quotes`);
+          if (withData === 0) {
+            console.warn("[optimize] ThetaData terminal is not reachable or returned no data — all combinations will use BS model. Check container logs for terminal startup.");
+            realData = undefined;
+          }
         } catch (err) {
           console.warn("[optimize] ThetaData prefetch failed, using BS model:", err);
         }

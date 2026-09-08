@@ -33,9 +33,8 @@ RUN apk add --no-cache openssl postgresql16 postgresql16-client openjdk21-jre cu
 
 ENV NODE_ENV=production
 ENV DATABASE_URL=postgresql://opc:opc_dev_password@127.0.0.1:5432/opc?schema=public
-# ThetaData credentials (optional — enables real historical options data)
-ENV THETADATA_BASE_URL=http://127.0.0.1:25503/v3
-# THETADATA_EMAIL and THETADATA_PASSWORD set at runtime from Coolify env vars
+# ThetaData: set THETADATA_EMAIL + THETADATA_PASSWORD at runtime (Coolify env vars)
+# to enable the terminal. The base URL defaults to http://127.0.0.1:25503/v3 in code.
 
 # Copy only what we need
 COPY --from=builder /app/package.json ./
@@ -55,7 +54,15 @@ EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
-# Download Theta Terminal JAR (auto-updating, ~41MB)
-RUN wget -q -O /app/ThetaTerminalV3.jar https://download-stable.thetadata.us/ || echo "Theta Terminal download failed — backtester will use BS model only"
+# Download Theta Terminal JAR (~41MB) and validate it — fail the build loudly
+# if the download is broken instead of silently shipping a dead terminal.
+RUN wget -q -O /app/ThetaTerminalV3.jar https://download-stable.thetadata.us/ && \
+    JAR_SIZE=$(wc -c < /app/ThetaTerminalV3.jar) && \
+    if [ "$JAR_SIZE" -lt 30000000 ]; then \
+      echo "ERROR: ThetaTerminalV3.jar is only $JAR_SIZE bytes — download invalid"; exit 1; \
+    fi
+
+# Terminal configuration (bind 0.0.0.0:25503, auth + MDDS endpoints — no secrets)
+COPY thetadata/config.toml /app/config.toml
 
 CMD ["./start.sh"]

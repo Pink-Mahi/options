@@ -71,6 +71,28 @@ if [ -f /app/ThetaTerminalV3.jar ] && [ -n "$THETADATA_EMAIL" ] && [ -n "$THETAD
   java -jar /app/ThetaTerminalV3.jar > /tmp/thetadata.log 2>&1 &
   THETA_PID=$!
   echo "Theta Terminal started in background (PID: $THETA_PID). It will become available at http://127.0.0.1:25503 once authentication completes."
+
+  # Watchdog: report readiness or failure in the container logs (does not block Next.js)
+  (
+    READY=0
+    for i in $(seq 1 120); do
+      if curl -s -o /dev/null -m 2 "http://127.0.0.1:25503/v3"; then
+        READY=1
+        echo "Theta Terminal is ready on port 25503 (after ${i}s)."
+        break
+      fi
+      if ! kill -0 "$THETA_PID" 2>/dev/null; then
+        echo "WARNING: Theta Terminal process (PID $THETA_PID) exited after ${i}s. Log output:"
+        tail -n 40 /tmp/thetadata.log 2>/dev/null || echo "(no log output)"
+        break
+      fi
+      sleep 1
+    done
+    if [ "$READY" -ne 1 ] && kill -0 "$THETA_PID" 2>/dev/null; then
+      echo "WARNING: Theta Terminal still not reachable on port 25503 after 120s. Last log lines:"
+      tail -n 40 /tmp/thetadata.log 2>/dev/null || echo "(no log output)"
+    fi
+  ) &
 else
   echo "Theta Terminal not started (no JAR or missing THETADATA_EMAIL/THETADATA_PASSWORD). Backtester will use BS model."
 fi

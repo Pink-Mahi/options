@@ -73,7 +73,12 @@ export async function POST(req: Request) {
         console.log(`[backtest] Pre-fetching ${datesToFetch.length} EOD chains from ThetaData...`);
         try {
           realData = await prefetchEODChains(symbol, datesToFetch);
-          console.log(`[backtest] ThetaData prefetch complete (${realData.size} dates)`);
+          const withData = Array.from(realData.values()).filter((q) => q.length > 0).length;
+          console.log(`[backtest] ThetaData prefetch complete: ${withData}/${datesToFetch.length} dates returned real quotes`);
+          if (withData === 0) {
+            console.warn("[backtest] ThetaData terminal is not reachable or returned no data — all cycles will use BS model. Check container logs for terminal startup.");
+            realData = undefined;
+          }
         } catch (err) {
           console.warn("[backtest] ThetaData prefetch failed, using BS model:", err);
         }
