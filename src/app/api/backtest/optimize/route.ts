@@ -144,183 +144,250 @@ function runOne(
 }
 
 export async function POST(req: Request) {
+  const user = await getSessionUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  let body: { symbol?: string; range?: string; contracts?: number; dteMin?: number; dteMax?: number };
   try {
-    const user = await getSessionUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-    const body = await req.json();
-    const symbol = String(body.symbol ?? "").toUpperCase().trim();
-    if (!symbol) return NextResponse.json({ error: "symbol is required" }, { status: 400 });
-
-    const requestedRange = String(body.range ?? "3y").toLowerCase();
-    const range: HistRange = (ALLOWED_RANGES as readonly string[]).includes(requestedRange)
-      ? (requestedRange as HistRange)
-      : "3y";
-
-    const contracts = Number(body.contracts) > 0 ? Number(body.contracts) : 1;
-
-    // Optional DTE range filter (e.g. 45-90, <=60, >=45)
-    const dteMin = Number(body.dteMin) > 0 ? Number(body.dteMin) : 0;
-    const dteMax = Number(body.dteMax) > 0 ? Number(body.dteMax) : 0;
-
-    // Fetch data once
-    const [hist, quote, spyHist] = await Promise.all([
-      getHistoricalPrices({ symbol, range }),
-      getQuote({ symbol }),
-      getHistoricalPrices({ symbol: "SPY", range }).catch(() => null),
-    ]);
-
-    const spot = quote.data.price;
-    const startingCapital = Math.max(spot * contracts * 100, 1);
-    const strikeInterval = spot >= 200 ? 5 : spot >= 50 ? 2.5 : 1;
-    const points = hist.data.points;
-    const spyPoints = spyHist?.data.points;
-
-    // Filter DTE grid if range constraints provided
-    const sweepDtes = DTES.filter((d) => {
-      if (dteMin > 0 && d < dteMin) return false;
-      if (dteMax > 0 && d > dteMax) return false;
-      return true;
-    });
-
-    if (sweepDtes.length === 0) {
-      return NextResponse.json({ error: "No DTE values match the specified range" }, { status: 400 });
-    }
-
-    // ---- Pre-fetch real ThetaData EOD chains (shared across ALL combinations) ----
-    // Each DTE in the sweep grid produces its own cycle dates (every
-    // round(dte * 252/365) trading days from index 30, matching the
-    // backtester's walk). Compute the union of those dates, then sample down
-    // to a cap so the prefetch stays within the request budget.
-    let realData: Map<string, ThetaDataEODQuote[]> | undefined;
-    if (isThetaDataConfigured()) {
-      const dateSet = new Set<string>();
-      for (const dte of sweepDtes) {
-        const step = Math.max(1, Math.round(dte * 252 / 365));
-        for (let i = 30; i < points.length; i += step) {
-          const p = points[i];
-          if (p) dateSet.add(p.date);
-        }
-      }
-      const allDates = Array.from(dateSet).sort();
-      // Cap the number of dates fetched. Default 40 keeps free-tier prefetch
-      // (~2.1s/req) under ~85s. Raise THETADATA_OPTIMIZE_MAX_DATES on paid
-      // tiers (or lower THETADATA_REQ_DELAY_MS).
-      const maxDates = Number(process.env.THETADATA_OPTIMIZE_MAX_DATES ?? 40);
-      let datesToFetch = allDates;
-      if (allDates.length > maxDates) {
-        // Sample evenly across the period so every DTE gets partial coverage
-        const stride = allDates.length / maxDates;
-        datesToFetch = Array.from({ length: maxDates }, (_, k) =>
-          allDates[Math.floor(k * stride)]!,
-        );
-      }
-      if (datesToFetch.length > 0) {
-        console.log(`[optimize] Pre-fetching ${datesToFetch.length} EOD chains from ThetaData (${allDates.length} cycle dates in grid)...`);
-        try {
-          realData = await prefetchEODChains(symbol, datesToFetch);
-          const withData = Array.from(realData.values()).filter((q) => q.length > 0).length;
-          console.log(`[optimize] ThetaData prefetch complete: ${withData}/${datesToFetch.length} dates returned real quotes`);
-          if (withData === 0) {
-            console.warn("[optimize] ThetaData terminal is not reachable or returned no data — all combinations will use BS model. Check container logs for terminal startup.");
-            realData = undefined;
-          }
-        } catch (err) {
-          console.warn("[optimize] ThetaData prefetch failed, using BS model:", err);
-        }
-      }
-    }
-
-    // ---- Phase 1: Coarse sweep (strategy × delta × DTE × buyback) ----
-    const phase1Results: OptimizeResult[] = [];
-
-    for (const strategy of STRATEGIES) {
-      const shares = strategy === "CASH_SECURED_PUT" ? 0 : contracts * 100;
-      for (const delta of DELTAS) {
-        for (const dte of sweepDtes) {
-          for (const buyBack of BUYBACKS) {
-            const r = runOne(points, {
-              strategy,
-              symbol,
-              deltaTarget: delta,
-              dteTarget: dte,
-              contracts,
-              startingCapital,
-              shares,
-              strikeInterval,
-              buyBackPct: buyBack,
-              neverBelowCost: false,
-              averageDown: false,
-              rollOnAssignment: false,
-            }, spyPoints, realData);
-            if (r) phase1Results.push(r);
-          }
-        }
-      }
-    }
-
-    // Sort phase 1 by annualized return, take top 10
-    phase1Results.sort((a, b) => b.annualizedReturn - a.annualizedReturn);
-    const phase1Top = phase1Results.slice(0, 10);
-
-    // ---- Phase 2: Fine-tune top 10 with boolean toggles + min yield ----
-    const allResults: OptimizeResult[] = [...phase1Results];
-
-    for (const base of phase1Top) {
-      const shares = base.strategy === "CASH_SECURED_PUT" ? 0 : contracts * 100;
-      for (const minYield of MIN_YIELDS) {
-        for (const bools of BOOLEANS) {
-          // Skip if this is the same as the base config (already in results)
-          if (
-            minYield === 0 &&
-            bools.neverBelowCost === false &&
-            bools.averageDown === false &&
-            bools.rollOnAssignment === false
-          ) {
-            continue;
-          }
-
-          const r = runOne(points, {
-            strategy: base.strategy as BacktestStrategy,
-            symbol,
-            deltaTarget: base.deltaTarget,
-            dteTarget: base.dte,
-            contracts,
-            startingCapital,
-            shares,
-            strikeInterval,
-            buyBackPct: base.buyBackPct,
-            minCallYieldPct: base.strategy === "CASH_SECURED_PUT" ? undefined : minYield,
-            minPutYieldPct: base.strategy === "COVERED_CALL" ? undefined : minYield,
-            neverBelowCost: bools.neverBelowCost,
-            averageDown: bools.averageDown,
-            rollOnAssignment: bools.rollOnAssignment,
-          }, spyPoints, realData);
-          if (r) allResults.push(r);
-        }
-      }
-    }
-
-    // Sort all results, take top 20
-    allResults.sort((a, b) => b.annualizedReturn - a.annualizedReturn);
-    const top20 = allResults.slice(0, 20);
-
-    return NextResponse.json({
-      symbol,
-      range,
-      totalCombinations: allResults.length,
-      phase1Combinations: phase1Results.length,
-      phase2Combinations: allResults.length - phase1Results.length,
-      topResults: top20,
-      buyHoldReturn: top20[0]?.buyHoldReturn ?? 0,
-      realDataUsed: (top20[0]?.realDataCycles ?? 0) > 0,
-      modelCaveat: realData && (top20[0]?.realDataCycles ?? 0) > 0
-        ? `Option premiums use real historical bid/ask from ThetaData where available. The optimizer sampled ${Number(process.env.THETADATA_OPTIMIZE_MAX_DATES ?? 40)} cycle dates across the sweep grid, so each combination blends real quotes with Black-Scholes fallback (see the Real column). Rankings compare strategies under the same data, not absolute predictions. Run a single backtest for full per-cycle real data.`
-        : realData
-          ? "ThetaData terminal is configured but no real data was returned for the sampled dates. All combinations use Black-Scholes model. Check that the terminal is running and the range is within your subscription tier."
-          : "Option premiums are modeled with Black-Scholes using trailing 30-day realized volatility, not historical option quotes. Rankings are comparative within the same model, not absolute predictions. Past performance does not guarantee future results.",
-    });
-  } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
+
+  const symbol = String(body.symbol ?? "").toUpperCase().trim();
+  if (!symbol) return NextResponse.json({ error: "symbol is required" }, { status: 400 });
+
+  const requestedRange = String(body.range ?? "3y").toLowerCase();
+  const range: HistRange = (ALLOWED_RANGES as readonly string[]).includes(requestedRange)
+    ? (requestedRange as HistRange)
+    : "3y";
+
+  const contracts = Number(body.contracts) > 0 ? Number(body.contracts) : 1;
+
+  // Optional DTE range filter (e.g. 45-90, <=60, >=45)
+  const dteMin = Number(body.dteMin) > 0 ? Number(body.dteMin) : 0;
+  const dteMax = Number(body.dteMax) > 0 ? Number(body.dteMax) : 0;
+
+  // Filter DTE grid if range constraints provided
+  const sweepDtes = DTES.filter((d) => {
+    if (dteMin > 0 && d < dteMin) return false;
+    if (dteMax > 0 && d > dteMax) return false;
+    return true;
+  });
+
+  if (sweepDtes.length === 0) {
+    return NextResponse.json({ error: "No DTE values match the specified range" }, { status: 400 });
+  }
+
+  const phase1Total = STRATEGIES.length * DELTAS.length * sweepDtes.length * BUYBACKS.length;
+
+  // NDJSON stream: one JSON event per line. Progress events flow to the UI
+  // while the sweep runs; the final line carries the full result payload.
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: Record<string, unknown>) => {
+        try {
+          controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
+        } catch {
+          // Client disconnected mid-run — keep computing, writes are best-effort.
+        }
+      };
+
+      try {
+        send({ type: "progress", message: "Loading price history…" });
+
+        // Fetch data once
+        const [hist, quote, spyHist] = await Promise.all([
+          getHistoricalPrices({ symbol, range }),
+          getQuote({ symbol }),
+          getHistoricalPrices({ symbol: "SPY", range }).catch(() => null),
+        ]);
+
+        const spot = quote.data.price;
+        const startingCapital = Math.max(spot * contracts * 100, 1);
+        const strikeInterval = spot >= 200 ? 5 : spot >= 50 ? 2.5 : 1;
+        const points = hist.data.points;
+        const spyPoints = spyHist?.data.points;
+
+        // ---- Pre-fetch real ThetaData EOD chains (shared across ALL combinations) ----
+        // Each DTE in the sweep grid produces its own cycle dates (every
+        // round(dte * 252/365) trading days from index 30, matching the
+        // backtester's walk). Compute the union of those dates, then sample down
+        // to a cap so the prefetch stays within the request budget.
+        let realData: Map<string, ThetaDataEODQuote[]> | undefined;
+        if (isThetaDataConfigured()) {
+          const dateSet = new Set<string>();
+          for (const dte of sweepDtes) {
+            const step = Math.max(1, Math.round(dte * 252 / 365));
+            for (let i = 30; i < points.length; i += step) {
+              const p = points[i];
+              if (p) dateSet.add(p.date);
+            }
+          }
+          const allDates = Array.from(dateSet).sort();
+          // Cap the number of dates fetched. Default 40 keeps free-tier prefetch
+          // (~2.1s/req) under ~85s. Raise THETADATA_OPTIMIZE_MAX_DATES on paid
+          // tiers (or lower THETADATA_REQ_DELAY_MS).
+          const maxDates = Number(process.env.THETADATA_OPTIMIZE_MAX_DATES ?? 40);
+          let datesToFetch = allDates;
+          if (allDates.length > maxDates) {
+            // Sample evenly across the period so every DTE gets partial coverage
+            const stride = allDates.length / maxDates;
+            datesToFetch = Array.from({ length: maxDates }, (_, k) =>
+              allDates[Math.floor(k * stride)]!,
+            );
+          }
+          if (datesToFetch.length > 0) {
+            console.log(`[optimize] Pre-fetching ${datesToFetch.length} EOD chains from ThetaData (${allDates.length} cycle dates in grid)...`);
+            send({
+              type: "progress",
+              stage: "prefetch",
+              message: `Fetching ${datesToFetch.length} historical option chains from ThetaData — this is the slow part`,
+              done: 0,
+              total: datesToFetch.length,
+            });
+            try {
+              realData = await prefetchEODChains(
+                symbol,
+                datesToFetch,
+                (done, total) =>
+                  send({ type: "progress", stage: "prefetch", message: "Fetching historical option chains from ThetaData", done, total }),
+              );
+              const withData = Array.from(realData.values()).filter((q) => q.length > 0).length;
+              console.log(`[optimize] ThetaData prefetch complete: ${withData}/${datesToFetch.length} dates returned real quotes`);
+              if (withData === 0) {
+                console.warn("[optimize] ThetaData terminal is not reachable or returned no data — all combinations will use BS model. Check container logs for terminal startup.");
+                realData = undefined;
+              }
+            } catch (err) {
+              console.warn("[optimize] ThetaData prefetch failed, using BS model:", err);
+            }
+          }
+        }
+
+        // ---- Phase 1: Coarse sweep (strategy × delta × DTE × buyback) ----
+        const phase1Results: OptimizeResult[] = [];
+        let phase1Done = 0;
+
+        for (const strategy of STRATEGIES) {
+          const shares = strategy === "CASH_SECURED_PUT" ? 0 : contracts * 100;
+          for (const delta of DELTAS) {
+            for (const dte of sweepDtes) {
+              for (const buyBack of BUYBACKS) {
+                const r = runOne(points, {
+                  strategy,
+                  symbol,
+                  deltaTarget: delta,
+                  dteTarget: dte,
+                  contracts,
+                  startingCapital,
+                  shares,
+                  strikeInterval,
+                  buyBackPct: buyBack,
+                  neverBelowCost: false,
+                  averageDown: false,
+                  rollOnAssignment: false,
+                }, spyPoints, realData);
+                if (r) phase1Results.push(r);
+                phase1Done++;
+                // Yield to the event loop periodically so streamed progress
+                // events actually flush to the client mid-sweep.
+                if (phase1Done % 25 === 0 || phase1Done === phase1Total) {
+                  send({ type: "progress", stage: "phase1", message: "Phase 1: sweeping strategy × delta × DTE × buyback", done: phase1Done, total: phase1Total });
+                  await new Promise((resolve) => setTimeout(resolve, 0));
+                }
+              }
+            }
+          }
+        }
+
+        // Sort phase 1 by annualized return, take top 10
+        phase1Results.sort((a, b) => b.annualizedReturn - a.annualizedReturn);
+        const phase1Top = phase1Results.slice(0, 10);
+
+        // ---- Phase 2: Fine-tune top 10 with boolean toggles + min yield ----
+        const allResults: OptimizeResult[] = [...phase1Results];
+        const phase2Total = phase1Top.length * (MIN_YIELDS.length * BOOLEANS.length - 1);
+        let phase2Done = 0;
+
+        for (const base of phase1Top) {
+          const shares = base.strategy === "CASH_SECURED_PUT" ? 0 : contracts * 100;
+          for (const minYield of MIN_YIELDS) {
+            for (const bools of BOOLEANS) {
+              // Skip if this is the same as the base config (already in results)
+              if (
+                minYield === 0 &&
+                bools.neverBelowCost === false &&
+                bools.averageDown === false &&
+                bools.rollOnAssignment === false
+              ) {
+                continue;
+              }
+
+              const r = runOne(points, {
+                strategy: base.strategy as BacktestStrategy,
+                symbol,
+                deltaTarget: base.deltaTarget,
+                dteTarget: base.dte,
+                contracts,
+                startingCapital,
+                shares,
+                strikeInterval,
+                buyBackPct: base.buyBackPct,
+                minCallYieldPct: base.strategy === "CASH_SECURED_PUT" ? undefined : minYield,
+                minPutYieldPct: base.strategy === "COVERED_CALL" ? undefined : minYield,
+                neverBelowCost: bools.neverBelowCost,
+                averageDown: bools.averageDown,
+                rollOnAssignment: bools.rollOnAssignment,
+              }, spyPoints, realData);
+              if (r) allResults.push(r);
+              phase2Done++;
+              if (phase2Done % 25 === 0 || phase2Done === phase2Total) {
+                send({ type: "progress", stage: "phase2", message: "Phase 2: fine-tuning top 10 with toggles + min yield", done: phase2Done, total: phase2Total });
+                await new Promise((resolve) => setTimeout(resolve, 0));
+              }
+            }
+          }
+        }
+
+        // Sort all results, take top 20
+        allResults.sort((a, b) => b.annualizedReturn - a.annualizedReturn);
+        const top20 = allResults.slice(0, 20);
+
+        send({
+          type: "result",
+          symbol,
+          range,
+          totalCombinations: allResults.length,
+          phase1Combinations: phase1Results.length,
+          phase2Combinations: allResults.length - phase1Results.length,
+          topResults: top20,
+          buyHoldReturn: top20[0]?.buyHoldReturn ?? 0,
+          realDataUsed: (top20[0]?.realDataCycles ?? 0) > 0,
+          modelCaveat: realData && (top20[0]?.realDataCycles ?? 0) > 0
+            ? `Option premiums use real historical bid/ask from ThetaData where available. The optimizer sampled ${Number(process.env.THETADATA_OPTIMIZE_MAX_DATES ?? 40)} cycle dates across the sweep grid, so each combination blends real quotes with Black-Scholes fallback (see the Real column). Rankings compare strategies under the same data, not absolute predictions. Run a single backtest for full per-cycle real data.`
+            : realData
+              ? "ThetaData terminal is configured but no real data was returned for the sampled dates. All combinations use Black-Scholes model. Check that the terminal is running and the range is within your subscription tier."
+              : "Option premiums are modeled with Black-Scholes using trailing 30-day realized volatility, not historical option quotes. Rankings are comparative within the same model, not absolute predictions. Past performance does not guarantee future results.",
+        });
+      } catch (e) {
+        send({ type: "error", error: (e as Error).message });
+      } finally {
+        try {
+          controller.close();
+        } catch {
+          // already closed
+        }
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+      "Cache-Control": "no-store, no-transform",
+      "X-Accel-Buffering": "no",
+    },
+  });
 }

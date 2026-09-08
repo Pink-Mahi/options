@@ -233,6 +233,7 @@ export async function fetchEODContract(
 export async function prefetchEODChains(
   symbol: string,
   dates: string[],
+  onProgress?: (done: number, total: number) => void,
 ): Promise<Map<string, ThetaDataEODQuote[]>> {
   const cache = new Map<string, ThetaDataEODQuote[]>();
   const base = getBaseUrl();
@@ -324,6 +325,7 @@ export async function prefetchEODChains(
     done++;
     // Progress feedback — a 120-date prefetch can take minutes with no
     // other output, which looks like a hang in the container logs.
+    onProgress?.(done, dates.length);
     if (done % 20 === 0 || done === dates.length) {
       console.log(`[thetadata] Prefetch progress: ${done}/${dates.length} chains fetched...`);
     }

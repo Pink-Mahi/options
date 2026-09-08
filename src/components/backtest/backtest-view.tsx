@@ -115,6 +115,13 @@ export function BacktestView() {
   const [optimizeMeta, setOptimizeMeta] = useState<{ totalCombinations: number; phase1Combinations?: number; phase2Combinations?: number; buyHoldReturn: number; modelCaveat: string; realDataUsed?: boolean } | null>(null);
   const [optDteMin, setOptDteMin] = useState<number>(0);
   const [optDteMax, setOptDteMax] = useState<number>(0);
+  const [optimizeProgress, setOptimizeProgress] = useState<{
+    message: string;
+    stage?: string;
+    done?: number;
+    total?: number;
+  } | null>(null);
+  const [optimizeElapsed, setOptimizeElapsed] = useState(0);
 
   useEffect(() => {
     fetch("/api/backtest-presets", { cache: "no-store" })
@@ -122,6 +129,13 @@ export function BacktestView() {
       .then((data) => setPresets(data.presets ?? []))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!optimizing) return;
+    setOptimizeElapsed(0);
+    const timer = setInterval(() => setOptimizeElapsed((s) => s + 1), 1000);
+    return () => clearInterval(timer);
+  }, [optimizing]);
 
   function savePreset() {
     const name = presetName.trim();
@@ -184,6 +198,7 @@ export function BacktestView() {
     setOptimizing(true);
     setError(null);
     setOptimizeResults(null);
+    setOptimizeProgress({ message: "Starting…" });
     try {
       const res = await fetch("/api/backtest/optimize", {
         method: "POST",
@@ -197,24 +212,80 @@ export function BacktestView() {
         }),
         cache: "no-store",
       });
-      const data = await res.json();
       if (!res.ok) {
+        const data = await res.json().catch(() => ({}) as { error?: string });
         setError(data.error ?? "Optimization failed.");
-      } else {
-        setOptimizeResults(data.topResults ?? []);
-        setOptimizeMeta({
-          totalCombinations: data.totalCombinations ?? 0,
-          phase1Combinations: data.phase1Combinations,
-          phase2Combinations: data.phase2Combinations,
-          buyHoldReturn: data.buyHoldReturn ?? 0,
-          modelCaveat: data.modelCaveat ?? "",
-          realDataUsed: data.realDataUsed ?? false,
-        });
+        return;
       }
+      if (!res.body) throw new Error("Streaming not supported by this browser.");
+
+      // The API streams NDJSON: progress lines while it runs, then one result.
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let payload: {
+        topResults?: OptimizeResult[];
+        totalCombinations?: number;
+        phase1Combinations?: number;
+        phase2Combinations?: number;
+        buyHoldReturn?: number;
+        modelCaveat?: string;
+        realDataUsed?: boolean;
+      } | null = null;
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const evt = JSON.parse(line) as {
+            type: string;
+            message?: string;
+            stage?: string;
+            done?: number;
+            total?: number;
+            error?: string;
+            topResults?: OptimizeResult[];
+            totalCombinations?: number;
+            phase1Combinations?: number;
+            phase2Combinations?: number;
+            buyHoldReturn?: number;
+            modelCaveat?: string;
+            realDataUsed?: boolean;
+          };
+          if (evt.type === "progress") {
+            setOptimizeProgress({
+              message: evt.message ?? "Working…",
+              stage: evt.stage,
+              done: evt.done,
+              total: evt.total,
+            });
+          } else if (evt.type === "result") {
+            payload = evt;
+          } else if (evt.type === "error") {
+            throw new Error(evt.error ?? "Optimization failed.");
+          }
+        }
+      }
+
+      if (!payload) throw new Error("Optimization ended without results.");
+      setOptimizeResults(payload.topResults ?? []);
+      setOptimizeMeta({
+        totalCombinations: payload.totalCombinations ?? 0,
+        phase1Combinations: payload.phase1Combinations,
+        phase2Combinations: payload.phase2Combinations,
+        buyHoldReturn: payload.buyHoldReturn ?? 0,
+        modelCaveat: payload.modelCaveat ?? "",
+        realDataUsed: payload.realDataUsed ?? false,
+      });
     } catch (e) {
       setError((e as Error).message);
     } finally {
       setOptimizing(false);
+      setOptimizeProgress(null);
     }
   }
 
@@ -785,13 +856,32 @@ export function BacktestView() {
         <Card className="border-primary/30 bg-primary/5">
           <CardContent className="pt-6">
             <div className="flex items-center gap-3">
-              <Sparkles className="h-5 w-5 animate-pulse text-primary" />
-              <div>
-                <p className="font-medium">Sweeping all DTE × buyback combinations…</p>
+              <Sparkles className="h-5 w-5 shrink-0 animate-pulse text-primary" />
+              <div className="min-w-0 flex-1">
+                <p className="font-medium">{optimizeProgress?.message ?? "Sweeping all combinations…"}</p>
                 <p className="text-sm text-muted-foreground">
-                  Phase 1: sweeping 3 strategies × 6 deltas × {optDteMin > 0 || optDteMax > 0 ? "filtered" : "9"} DTEs × 7 buybacks.
-                  Phase 2: fine-tuning top 10 with toggles + min yield. This takes 1–3 minutes.
+                  {optimizeProgress?.stage === "prefetch"
+                    ? "Downloading real historical option chains — this typically takes 2–4 minutes."
+                    : optimizeProgress?.stage === "phase1" || optimizeProgress?.stage === "phase2"
+                      ? "Running backtests against the fetched data."
+                      : "Full sweep typically takes 1–5 minutes."}{" "}
+                  Elapsed {Math.floor(optimizeElapsed / 60)}:{String(optimizeElapsed % 60).padStart(2, "0")}.
                 </p>
+                {optimizeProgress?.total != null && optimizeProgress.total > 0 && (
+                  <div className="mt-2">
+                    <div className="h-2 overflow-hidden rounded-full bg-secondary">
+                      <div
+                        className="h-full rounded-full bg-primary transition-all duration-300"
+                        style={{
+                          width: `${Math.min(100, Math.round(((optimizeProgress.done ?? 0) / optimizeProgress.total) * 100))}%`,
+                        }}
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {optimizeProgress.done ?? 0} / {optimizeProgress.total}
+                    </p>
+                  </div>
+                )}
               </div>
             </div>
           </CardContent>
