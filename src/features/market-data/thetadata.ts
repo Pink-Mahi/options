@@ -244,6 +244,7 @@ export async function prefetchEODChains(
   // terminal is down, and grinding through every date just wastes minutes.
   let consecutiveFailures = 0;
   let done = 0;
+  let loggedEmptySample = false;
 
   for (const date of dates) {
     if (consecutiveFailures >= 3) {
@@ -281,8 +282,20 @@ export async function prefetchEODChains(
       }
       consecutiveFailures = 0;
 
-      const json = (await res.json()) as ThetaDataEODResponse;
+      // Capture the raw body so failures are diagnosable — the terminal
+      // returns HTTP 200 with an error/empty payload when unauthenticated
+      // or unentitled, and we need to see what it actually said.
+      const text = await res.text();
+      let json: ThetaDataEODResponse;
+      try {
+        json = JSON.parse(text) as ThetaDataEODResponse;
+      } catch {
+        console.warn(`ThetaData returned non-JSON for ${symbol} on ${date} (HTTP ${res.status}): ${text.slice(0, 300)}`);
+        cache.set(date, []);
+        continue;
+      }
       if (!json.data || !Array.isArray(json.data)) {
+        console.warn(`ThetaData unexpected response shape for ${symbol} on ${date}: ${text.slice(0, 300)}`);
         cache.set(date, []);
         continue;
       }
@@ -310,6 +323,12 @@ export async function prefetchEODChains(
         });
       }
 
+      if (quotes.length === 0 && !loggedEmptySample) {
+        loggedEmptySample = true;
+        console.warn(
+          `ThetaData returned zero quotes for ${symbol} on ${date}. Raw response (first 300 chars): ${text.slice(0, 300)}`,
+        );
+      }
       cache.set(date, quotes);
     } catch (err) {
       console.warn(`ThetaData fetch error for ${symbol} on ${date}: ${(err as Error).message}`);

@@ -258,6 +258,16 @@ export async function POST(req: Request) {
               console.log(`[optimize] ThetaData prefetch complete: ${withData}/${datesToFetch.length} dates returned real quotes`);
               if (withData === 0) {
                 console.warn("[optimize] ThetaData terminal is not reachable or returned no data — all combinations will use BS model. Check container logs for terminal startup.");
+                // The terminal's own log says why it returns empty data
+                // (auth failure, tier limits, MDDS issues). Same container.
+                try {
+                  const { readFile } = await import("node:fs/promises");
+                  const log = await readFile("/tmp/thetadata.log", "utf8");
+                  const lines = log.split("\n").filter((l) => l.trim().length > 0).slice(-40);
+                  console.warn("[optimize] Theta Terminal log (last 40 lines):\n" + lines.join("\n"));
+                } catch {
+                  console.warn("[optimize] (no Theta Terminal log found at /tmp/thetadata.log)");
+                }
                 realData = undefined;
               }
             } catch (err) {

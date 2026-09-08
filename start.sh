@@ -94,6 +94,15 @@ if [ -f /app/ThetaTerminalV3.jar ] && [ -n "$THETADATA_EMAIL" ] && [ -n "$THETAD
       echo "WARNING: Theta Terminal still not reachable on port 25503 after 120s. Last log lines:"
       tail -n 40 /tmp/thetadata.log 2>/dev/null || echo "(no log output)"
     fi
+    if [ "$READY" -eq 1 ]; then
+      # Smoke test: the port can bind before authentication finishes. Wait,
+      # then fetch one known historical chain and print the raw response —
+      # HTTP 200 with empty data means auth/entitlement trouble, and the
+      # raw body says which.
+      sleep 15
+      SMOKE=$(wget -qO- "http://127.0.0.1:25503/v3/option/history/eod?symbol=TSLA&start_date=20260901&end_date=20260901&expiration=*&strike=*&right=both&format=json" 2>&1 | head -c 300 || true)
+      echo "Theta Terminal smoke test (TSLA EOD 2026-09-01, first 300 chars): ${SMOKE:-<empty response>}"
+    fi
   ) &
 else
   echo "Theta Terminal not started (no JAR or missing THETADATA_EMAIL/THETADATA_PASSWORD). Backtester will use BS model."
