@@ -70,6 +70,12 @@ interface BacktestResponse extends BacktestResult {
   startingCapital: number;
   underlyingPrice: number;
   modelCaveat: string;
+  dataSourceSummary?: {
+    realDataCycles: number;
+    bsModelCycles: number;
+    totalCycles: number;
+    usingRealData: boolean;
+  };
   _label?: string;
 }
 
@@ -309,12 +315,14 @@ export function BacktestView() {
   function exportCsv() {
     if (!result) return;
     const rows = [
-      ["Open", "Close", "Type", "Strike", "Stock Open", "Stock Close", "Premium", "Yield", "Outcome", "Cycle P/L", "Days", "Contracts"],
+      ["Open", "Close", "Type", "Strike", "Stock Open", "Stock Close", "Premium", "Buy-back", "Yield", "Outcome", "Data Source", "Cycle P/L", "Days", "Contracts"],
       ...result.trades.map((t) => [
         t.openDate, t.closeDate, t.optionType, t.strike.toFixed(2),
         t.stockPriceAtOpen.toFixed(2), t.stockPriceAtClose.toFixed(2),
-        t.premiumIncome.toFixed(2), (t.premiumYield * 100).toFixed(2) + "%",
-        t.outcome, t.cyclePnl.toFixed(2), String(t.daysHeld), String(t.contracts),
+        t.premiumIncome.toFixed(2),
+        t.exitPremium != null ? t.exitPremium.toFixed(2) : "",
+        (t.premiumYield * 100).toFixed(2) + "%",
+        t.outcome, t.dataSource, t.cyclePnl.toFixed(2), String(t.daysHeld), String(t.contracts),
       ]),
     ];
     const csv = rows.map((r) => r.map((c) => `"${c}"`).join(",")).join("\n");
@@ -365,15 +373,17 @@ export function BacktestView() {
         </p>
       </div>
 
-      <Card className="border-warning/40 bg-warning/5">
+      <Card className={cn("border-warning/40 bg-warning/5", result?.dataSourceSummary?.usingRealData && "border-profit/40 bg-profit/5")}>
         <CardContent className="pt-6 text-sm">
-          <p className="font-semibold">Read this before trusting any number below</p>
+          <p className="font-semibold">
+            {result?.dataSourceSummary?.usingRealData
+              ? "Real historical options data active"
+              : "Read this before trusting any number below"}
+          </p>
           <p className="mt-1 text-muted-foreground">
-            Historical option quotes are not available, so each cycle&apos;s premium is{" "}
-            <strong>modeled with Black-Scholes</strong> using trailing 30-day realized volatility. Real
-            markets price volatility above realized (the variance risk premium), so modeled premiums are
-            usually <em>conservative</em> — but strike availability, spreads, and fills all differ. Treat
-            this as a rough shape of the strategy, not a track record you could have achieved.
+            {result?.dataSourceSummary?.usingRealData
+              ? result.modelCaveat
+              : "Historical option quotes are not available, so each cycle's premium is modeled with Black-Scholes using trailing 30-day realized volatility. Real markets price volatility above realized (the variance risk premium), so modeled premiums are usually conservative — but strike availability, spreads, and fills all differ. Treat this as a rough shape of the strategy, not a track record you could have achieved."}
           </p>
         </CardContent>
       </Card>
@@ -1159,8 +1169,10 @@ export function BacktestView() {
                       <TableHead className="text-right">Stock open</TableHead>
                       <TableHead className="text-right">Stock close</TableHead>
                       <TableHead className="text-right">Premium</TableHead>
+                      <TableHead className="text-right">Buy-back</TableHead>
                       <TableHead className="text-right">Yield</TableHead>
                       <TableHead>Outcome</TableHead>
+                      <TableHead>Data</TableHead>
                       <TableHead className="text-right">Cycle P/L</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1174,11 +1186,21 @@ export function BacktestView() {
                         <TableCell className="text-right">{formatCurrency(t.stockPriceAtOpen, 2)}</TableCell>
                         <TableCell className="text-right">{formatCurrency(t.stockPriceAtClose, 2)}</TableCell>
                         <TableCell className="text-right">{formatCurrency(t.premiumIncome, 2)}</TableCell>
+                        <TableCell className="text-right text-xs">
+                          {t.exitPremium != null ? formatCurrency(t.exitPremium, 2) : "—"}
+                        </TableCell>
                         <TableCell className="text-right">
                           {t.outcome === "NO_FILL" ? "—" : formatPercent(t.premiumYield, 2)}
                         </TableCell>
                         <TableCell>
                           <Badge variant={outcomeVariant(t.outcome)}>{t.outcome.replace(/_/g, " ").toLowerCase()}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          {t.dataSource === "REAL" ? (
+                            <Badge variant="profit" className="text-xs">REAL</Badge>
+                          ) : (
+                            <Badge variant="secondary" className="text-xs">BS</Badge>
+                          )}
                         </TableCell>
                         <TableCell
                           className={cn(
