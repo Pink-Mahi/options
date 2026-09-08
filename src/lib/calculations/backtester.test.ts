@@ -43,7 +43,7 @@ describe("runBacktest - covered call", () => {
     });
 
     expect(result.trades.length).toBe(13);
-    expect(result.totalPremiumIncome).toBeCloseTo(601.41, 1);
+    expect(result.totalPremiumIncome).toBeCloseTo(620.32, 1);
     expect(result.equityCurve.length).toBe(13);
     expect(result.totalCycles).toBe(13);
   });
@@ -85,8 +85,8 @@ describe("runBacktest - covered call", () => {
     });
 
     expect(result.buyHoldReturn).toBeCloseTo(0.188, 2);
-    expect(result.strategyReturn).toBeCloseTo(0.171, 2);
-    expect(result.outperformance).toBeCloseTo(-0.017, 2);
+    expect(result.strategyReturn).toBeCloseTo(0.189, 2);
+    expect(result.outperformance).toBeCloseTo(0.001, 2);
   });
 });
 
@@ -107,7 +107,7 @@ describe("runBacktest - cash secured put", () => {
     });
 
     expect(result.trades.length).toBe(9);
-    expect(result.totalPremiumIncome).toBeCloseTo(527.76, 1);
+    expect(result.totalPremiumIncome).toBeCloseTo(609.95, 1);
     expect(result.totalCycles).toBe(9);
     expect(result.assignmentCount).toBe(5);
     expect(result.expiredWorthlessCount).toBe(4);
@@ -508,7 +508,7 @@ describe("runBacktest - edge cases", () => {
       fillAssumption: "mid",
     });
 
-    expect(result.maxDrawdown).toBeCloseTo(0.145, 2);
+    expect(result.maxDrawdown).toBeCloseTo(0.132, 2);
     expect(result.maxDrawdown).toBeGreaterThanOrEqual(0);
     expect(result.maxDrawdown).toBeLessThanOrEqual(1);
   });

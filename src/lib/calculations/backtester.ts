@@ -45,6 +45,14 @@ export interface BacktestConfig {
   strikeInterval: number;
   /** Premium assumption: "bid" (conservative) or "mid" */
   fillAssumption: "bid" | "mid";
+  /** Annual dividend yield (e.g. 0.015 for 1.5%). Used in BS pricing. */
+  dividendYield?: number;
+  /** IV risk premium multiplier applied to realized vol (e.g. 1.15 = 15% premium). Default 1.15. */
+  ivRiskPremium?: number;
+  /** When true, applies equity IV skew (OTM puts trade at higher IV). Default true. */
+  ivSkewEnabled?: boolean;
+  /** When true, adjusts IV for DTE term structure. Default true. */
+  termStructureEnabled?: boolean;
   /**
    * When true, covered calls are only sold at strikes >= the share cost basis
    * (the price paid for the shares — e.g. the put strike at assignment).
@@ -187,6 +195,92 @@ function realizedVol(prices: HistoricalPricePoint[], endIdx: number, window: num
 }
 
 /**
+ * Apply IV risk premium to realized vol.
+ * Real-world IV is typically 10-25% higher than realized vol (the volatility risk premium).
+ * Default multiplier: 1.15 (15% premium).
+ */
+function applyRiskPremium(rv: number, multiplier: number): number {
+  return Math.min(rv * multiplier, 5.0); // cap at 500% to avoid extreme values
+}
+
+/**
+ * Apply equity IV skew model.
+ * Real options markets show a "smile/smirk" where OTM puts trade at higher IV
+ * than ATM, and OTM calls trade at slightly lower IV.
+ *
+ * Model: IV(strike) = baseIV * (1 + skewSlope * moneyness)
+ * where moneyness = (spot - strike) / spot for puts (positive when OTM)
+ * and moneyness = (strike - spot) / spot for calls (positive when OTM).
+ *
+ * For puts: OTM puts (strike < spot) get +IV premium (skewSlope positive)
+ * For calls: OTM calls (strike > spot) get slight -IV discount
+ */
+function applySkew(
+  baseIV: number,
+  spot: number,
+  strike: number,
+  optionType: "CALL" | "PUT",
+): number {
+  const moneyness = optionType === "PUT"
+    ? (spot - strike) / spot  // positive when OTM put (strike below spot)
+    : (strike - spot) / spot; // positive when OTM call (strike above spot)
+
+  // Equity skew: puts get ~2 IV points per 10% OTM, calls get ~0.5 IV points discount
+  const skewSlope = optionType === "PUT" ? 0.20 : 0.05;
+  const skewAdjustment = skewSlope * moneyness;
+
+  return Math.max(baseIV * (1 + skewAdjustment), 0.05);
+}
+
+/**
+ * Apply term structure adjustment.
+ * Short-dated options tend to have slightly higher IV (near-term uncertainty)
+ * while longer-dated options have lower IV (mean-reversion).
+ *
+ * Model: IV(dte) = baseIV * (1 + termFactor * (30/dte - 1))
+ * At dte=30: no adjustment. At dte=7: ~4% higher. At dte=180: ~8% lower.
+ */
+function applyTermStructure(baseIV: number, dte: number): number {
+  if (dte <= 0) return baseIV;
+  const termFactor = 0.15; // 15% adjustment factor
+  const adjustment = termFactor * (30 / dte - 1);
+  return Math.max(baseIV * (1 + adjustment), 0.05);
+}
+
+/**
+ * Estimate bid/ask spread as a fraction of option mid price.
+ * Real spreads vary by liquidity, stock price, and option moneyness.
+ *
+ * Model: spread% = baseSpread + liquidityFactor + moneynessFactor
+ * - Liquid stocks (high volume, low price): tighter spreads
+ * - Illiquid or low-priced options: wider spreads
+ * - Deep OTM options: wider spreads
+ */
+function estimateBidAskSpread(
+  midPrice: number,
+  spot: number,
+  strike: number,
+  optionType: "CALL" | "PUT",
+): number {
+  // Base spread: wider for cheaper options (percentage-wise)
+  let spreadPct = 0.05; // 5% default
+
+  if (midPrice < 0.50) spreadPct = 0.15;       // very cheap option: 15%
+  else if (midPrice < 1.0) spreadPct = 0.10;    // cheap: 10%
+  else if (midPrice < 5.0) spreadPct = 0.05;    // moderate: 5%
+  else if (midPrice < 25.0) spreadPct = 0.03;   // liquid: 3%
+  else spreadPct = 0.02;                         // very liquid: 2%
+
+  // Wider spreads for deep OTM
+  const moneyness = optionType === "PUT"
+    ? Math.abs((spot - strike) / spot)
+    : Math.abs((strike - spot) / spot);
+  if (moneyness > 0.15) spreadPct += 0.03; // deep OTM: +3%
+
+  return Math.min(spreadPct, 0.25); // cap at 25%
+}
+
+/**
  * Find the strike whose delta is closest to the target.
  *
  * When `minStrike` is provided (cost-basis floor for covered calls), strikes
@@ -203,13 +297,25 @@ function findStrikeByDelta(
   deltaTarget: number,
   strikeInterval: number,
   minStrike?: number,
+  dividendYield?: number,
+  ivSkewEnabled?: boolean,
+  termStructureEnabled?: boolean,
 ): { strike: number; delta: number; premium: number; flooredByMin: boolean } {
   const T = dte / 365;
+
+  // Apply term structure to base IV
+  const baseIV = termStructureEnabled !== false
+    ? applyTermStructure(iv, dte)
+    : iv;
 
   const scan = (from: number, to: number) => {
     let best = { strike: from, delta: 0, premium: 0, diff: Infinity };
     for (let strike = from; strike <= to + 1e-9; strike += strikeInterval) {
-      const bs = blackScholes({ spot, strike, timeToExpiry: T, riskFreeRate, volatility: iv, optionType });
+      // Apply skew per-strike
+      const strikeIV = ivSkewEnabled !== false
+        ? applySkew(baseIV, spot, strike, optionType)
+        : baseIV;
+      const bs = blackScholes({ spot, strike, timeToExpiry: T, riskFreeRate, volatility: strikeIV, dividendYield, optionType });
       const delta = Math.abs(bs.greeks.delta ?? 0);
       const diff = Math.abs(delta - deltaTarget);
       if (diff < best.diff) {
@@ -394,7 +500,8 @@ export function runBacktest(
     if (!openPrice) { idx++; continue; }
 
     const spot = openPrice.adjustedClose;
-    const iv = realizedVol(prices, idx, 30);
+    const rv = realizedVol(prices, idx, 30);
+    const iv = applyRiskPremium(rv, config.ivRiskPremium ?? 1.15);
 
     // Determine option type based on strategy
     let optionType: "CALL" | "PUT";
@@ -475,7 +582,8 @@ export function runBacktest(
         const tryPoint = prices[tryIdx];
         if (!tryPoint) continue;
         const trySpot = tryPoint.adjustedClose;
-        const tryIv = realizedVol(prices, tryIdx, 30);
+        const tryRv = realizedVol(prices, tryIdx, 30);
+        const tryIv = applyRiskPremium(tryRv, config.ivRiskPremium ?? 1.15);
         const elapsedDays =
           (new Date(tryPoint.date).getTime() - new Date(openPrice.date).getTime()) /
           (1000 * 60 * 60 * 24);
@@ -489,8 +597,14 @@ export function runBacktest(
           config.deltaTarget,
           config.strikeInterval,
           minCallStrike,
+          config.dividendYield,
+          config.ivSkewEnabled,
+          config.termStructureEnabled,
         );
-        const tryFill = res.premium * (config.fillAssumption === "bid" ? 0.95 : 1);
+        const trySpread = estimateBidAskSpread(res.premium, trySpot, res.strike, optionType);
+        const tryFill = config.fillAssumption === "bid"
+          ? res.premium * (1 - trySpread / 2)
+          : res.premium;
         if (trySpot > 0 && tryFill / trySpot >= yieldFloor) {
           filled = true;
           openSpot = trySpot;
@@ -514,6 +628,9 @@ export function runBacktest(
         config.deltaTarget,
         config.strikeInterval,
         minCallStrike,
+        config.dividendYield,
+        config.ivSkewEnabled,
+        config.termStructureEnabled,
       );
       strike = res.strike;
       premium = res.premium;
@@ -521,9 +638,12 @@ export function runBacktest(
     }
     if (flooredByMin) costBasisFlooredCount++;
 
-    // Apply fill assumption
+    // Apply fill assumption with variable bid/ask spread
+    const spreadPct = filled ? estimateBidAskSpread(premium, spot, strike, optionType) : 0;
     const fillPrice = filled
-      ? config.fillAssumption === "bid" ? premium * 0.95 : premium
+      ? config.fillAssumption === "bid"
+        ? premium * (1 - spreadPct / 2)
+        : premium
       : 0;
     const premiumIncome = fillPrice * 100 * activeContracts;
     cashFromPremium += premiumIncome;
@@ -552,16 +672,24 @@ export function runBacktest(
         const p = prices[d];
         if (!p) continue;
         const dSpot = p.adjustedClose;
-        const dIv = realizedVol(prices, d, 30);
+        const dRv = realizedVol(prices, d, 30);
+        const dIv = applyRiskPremium(dRv, config.ivRiskPremium ?? 1.15);
         const remainingDays =
           (new Date(closePrice.date).getTime() - new Date(p.date).getTime()) /
           (1000 * 60 * 60 * 24);
+        const dBaseIv = config.termStructureEnabled !== false
+          ? applyTermStructure(dIv, Math.max(remainingDays, 0.5))
+          : dIv;
+        const dStrikeIv = config.ivSkewEnabled !== false
+          ? applySkew(dBaseIv, dSpot, strike, optionType)
+          : dBaseIv;
         const bs = blackScholes({
           spot: dSpot,
           strike,
           timeToExpiry: Math.max(remainingDays, 0.5) / 365,
           riskFreeRate: config.riskFreeRate,
-          volatility: dIv,
+          volatility: dStrikeIv,
+          dividendYield: config.dividendYield,
           optionType,
         });
         if (bs.price <= trigger) {

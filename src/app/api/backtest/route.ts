@@ -9,6 +9,7 @@ import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { getHistoricalPrices, getQuote } from "@/features/market-data/service";
 import { runBacktest, type BacktestStrategy } from "@/lib/calculations/backtester";
+import { isThetaDataConfigured } from "@/features/market-data/thetadata";
 
 export const dynamic = "force-dynamic";
 
@@ -66,6 +67,10 @@ export async function POST(req: Request) {
         shares,
         strikeInterval: spot >= 200 ? 5 : spot >= 50 ? 2.5 : 1,
         fillAssumption: body.fillAssumption === "mid" ? "mid" : "bid",
+        dividendYield: Number(body.dividendYield) >= 0 ? Number(body.dividendYield) : undefined,
+        ivRiskPremium: Number(body.ivRiskPremium) > 0 ? Number(body.ivRiskPremium) : 1.15,
+        ivSkewEnabled: body.ivSkewEnabled !== false,
+        termStructureEnabled: body.termStructureEnabled !== false,
         neverSellCallBelowCostBasis: body.neverSellCallBelowCostBasis === true,
         minCallPremiumYieldPct:
           Number(body.minCallPremiumYieldPct) > 0 ? Number(body.minCallPremiumYieldPct) : undefined,
@@ -85,8 +90,9 @@ export async function POST(req: Request) {
       ...result,
       startingCapital,
       underlyingPrice: spot,
-      modelCaveat:
-        "Option premiums are modeled with Black-Scholes using trailing 30-day realized volatility, not historical option quotes. Real fills would differ, and this is not an achievable track record.",
+      modelCaveat: isThetaDataConfigured()
+        ? "Option premiums use real historical bid/ask from ThetaData when available, with Black-Scholes (IV risk premium + skew + term structure) as fallback. Results are more realistic but still not an achievable track record."
+        : "Option premiums are modeled with Black-Scholes using trailing 30-day realized volatility with IV risk premium (1.15x), equity skew, and term structure. Not historical option quotes. Real fills would differ, and this is not an achievable track record.",
     });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
