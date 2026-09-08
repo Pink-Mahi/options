@@ -9,7 +9,7 @@ import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { getHistoricalPrices, getQuote } from "@/features/market-data/service";
 import { runBacktest, type BacktestStrategy } from "@/lib/calculations/backtester";
-import { isThetaDataConfigured } from "@/features/market-data/thetadata";
+import { isThetaDataConfigured, prefetchEODChains } from "@/features/market-data/thetadata";
 
 export const dynamic = "force-dynamic";
 
@@ -54,13 +54,39 @@ export async function POST(req: Request) {
         ? Number(body.startingCapital)
         : Math.max(spot * contracts * 100, 1);
 
+    const dteTarget = Number(body.dteTarget) > 0 ? Number(body.dteTarget) : 45;
+    const tradingDaysPerCycle = Math.round(dteTarget * 252 / 365);
+
+    // Pre-fetch real EOD option chains from ThetaData if terminal is configured.
+    // The backtester looks up real bid/ask by date, falling back to BS model
+    // for any dates not in the map.
+    let realData: Map<string, import("@/features/market-data/thetadata").ThetaDataEODQuote[]> | undefined;
+    if (isThetaDataConfigured()) {
+      const cycleDates: string[] = [];
+      for (let i = 30; i < hist.data.points.length; i += tradingDaysPerCycle) {
+        const p = hist.data.points[i];
+        if (p) cycleDates.push(p.date);
+      }
+      // Limit to 60 cycles to avoid excessive API calls (free tier: 30 req/min)
+      const datesToFetch = cycleDates.slice(0, 60);
+      if (datesToFetch.length > 0) {
+        console.log(`[backtest] Pre-fetching ${datesToFetch.length} EOD chains from ThetaData...`);
+        try {
+          realData = await prefetchEODChains(symbol, datesToFetch, dteTarget);
+          console.log(`[backtest] ThetaData prefetch complete (${realData.size} dates)`);
+        } catch (err) {
+          console.warn("[backtest] ThetaData prefetch failed, using BS model:", err);
+        }
+      }
+    }
+
     const result = runBacktest(
       hist.data.points,
       {
         strategy,
         symbol,
         deltaTarget: Number(body.deltaTarget) > 0 ? Number(body.deltaTarget) : 0.3,
-        dteTarget: Number(body.dteTarget) > 0 ? Number(body.dteTarget) : 45,
+        dteTarget,
         contracts,
         riskFreeRate: Number(body.riskFreeRate) > 0 ? Number(body.riskFreeRate) : 0.05,
         startingCapital,
@@ -82,6 +108,7 @@ export async function POST(req: Request) {
             ? Number(body.buyBackPct)
             : undefined,
         rollOnAssignment: body.rollOnAssignment === true,
+        realData,
       },
       spyHist?.data.points,
     );
@@ -90,8 +117,16 @@ export async function POST(req: Request) {
       ...result,
       startingCapital,
       underlyingPrice: spot,
+      dataSourceSummary: {
+        realDataCycles: result.realDataCycles,
+        bsModelCycles: result.bsModelCycles,
+        totalCycles: result.totalCycles,
+        usingRealData: result.realDataCycles > 0,
+      },
       modelCaveat: isThetaDataConfigured()
-        ? "Option premiums use real historical bid/ask from ThetaData when available, with Black-Scholes (IV risk premium + skew + term structure) as fallback. Results are more realistic but still not an achievable track record."
+        ? result.realDataCycles > 0
+          ? `Option premiums use real historical bid/ask from ThetaData for ${result.realDataCycles} of ${result.totalCycles} cycles. The remaining ${result.bsModelCycles} cycles use Black-Scholes (IV risk premium + skew + term structure) as fallback. Results are more realistic but still not an achievable track record.`
+          : "ThetaData terminal is configured but no real data was available for the requested dates. All cycles use Black-Scholes model. Check that the terminal is running and the date range is within your subscription tier."
         : "Option premiums are modeled with Black-Scholes using trailing 30-day realized volatility with IV risk premium (1.15x), equity skew, and term structure. Not historical option quotes. Real fills would differ, and this is not an achievable track record.",
     });
   } catch (e) {

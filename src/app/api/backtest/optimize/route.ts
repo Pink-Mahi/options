@@ -263,7 +263,7 @@ export async function POST(req: Request) {
       topResults: top20,
       buyHoldReturn: top20[0]?.buyHoldReturn ?? 0,
       modelCaveat:
-        "Option premiums are modeled with Black-Scholes using trailing 30-day realized volatility, not historical option quotes. Rankings are comparative within the same model, not absolute predictions. Past performance does not guarantee future results.",
+        "Option premiums are modeled with Black-Scholes using trailing 30-day realized volatility, not historical option quotes. Rankings are comparative within the same model, not absolute predictions. Past performance does not guarantee future results. Run a single backtest with ThetaData configured for real-data verification.",
     });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });

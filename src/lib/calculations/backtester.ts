@@ -15,10 +15,12 @@
  */
 
 import type { HistoricalPricePoint } from "@/lib/types";
-import { blackScholes, impliedVolatility } from "./pricing-model";
+import { blackScholes } from "./pricing-model";
 import { simpleAnnualizedRate } from "./core";
 import type { MarketContext } from "./market-context";
 import { analyzeMarketContext } from "./market-context";
+import type { ThetaDataEODQuote } from "@/features/market-data/thetadata";
+import { findContractByDelta } from "@/features/market-data/thetadata";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -90,6 +92,12 @@ export interface BacktestConfig {
    * the call phase.
    */
   rollOnAssignment?: boolean;
+  /**
+   * Optional map of date (YYYY-MM-DD) → real EOD option quotes from ThetaData.
+   * When available for a cycle date, the backtester uses real bid/ask and
+   * backs out IV from market prices instead of using the BS model.
+   */
+  realData?: Map<string, ThetaDataEODQuote[]>;
 }
 
 export interface BacktestTrade {
@@ -113,6 +121,8 @@ export interface BacktestTrade {
   premiumYield: number;
   /** Price per share paid to buy the option back early (null if held to expiry) */
   exitPremium: number | null;
+  /** Whether this cycle used real ThetaData quotes or BS-modeled premiums */
+  dataSource: "REAL" | "BS_MODEL";
 }
 
 export interface BacktestResult {
@@ -168,6 +178,10 @@ export interface BacktestResult {
   rolledCount: number;
   /** Market context analysis (benchmark comparison, regime, drawdown attribution). Null when no benchmark data provided. */
   marketContext: MarketContext | null;
+  /** Number of cycles that used real ThetaData bid/ask instead of BS model */
+  realDataCycles: number;
+  /** Number of cycles that fell back to BS model (no real data available) */
+  bsModelCycles: number;
   warnings: string[];
 }
 
@@ -442,6 +456,8 @@ export function runBacktest(
   let putCycleCount = 0;
   let putPremiumYieldSum = 0;
   let rolledCount = 0;
+  let realDataCycles = 0;
+  let bsModelCycles = 0;
 
   const firstPrice = prices[0];
   const lastPrice = prices[prices.length - 1];
@@ -482,6 +498,8 @@ export function runBacktest(
       avgPutPremiumYield: 0,
       rolledCount: 0,
       marketContext: null,
+      realDataCycles: 0,
+      bsModelCycles: 0,
       warnings: ["No price data available."],
     };
   }
@@ -560,10 +578,8 @@ export function runBacktest(
     if (!closePrice) { idx++; continue; }
     const closeSpot = closePrice.adjustedClose;
 
-    // --- GTC limit-order simulation for calls AND puts ------------------
-    // When a minimum premium yield is set, the order only fills if the modeled
-    // premium reaches the floor. Re-check every 5 trading days within the
-    // cycle; a later fill means a shorter remaining DTE.
+    // --- Fill logic: real data (ThetaData) or BS model -------------------
+    let dataSource: "REAL" | "BS_MODEL" = "BS_MODEL";
     let openSpot = spot;
     let openDate = openPrice.date;
     let openIdx = idx;
@@ -571,27 +587,90 @@ export function runBacktest(
     let premium = 0;
     let flooredByMin = false;
     let filled = true;
+    let fillPrice = 0;
 
     const yieldFloor =
       optionType === "CALL"
         ? (config.minCallPremiumYieldPct ?? 0)
         : (config.minPutPremiumYieldPct ?? 0);
-    if (yieldFloor > 0) {
-      filled = false;
-      for (let tryIdx = idx; tryIdx <= closeIdx; tryIdx += 5) {
-        const tryPoint = prices[tryIdx];
-        if (!tryPoint) continue;
-        const trySpot = tryPoint.adjustedClose;
-        const tryRv = realizedVol(prices, tryIdx, 30);
-        const tryIv = applyRiskPremium(tryRv, config.ivRiskPremium ?? 1.15);
-        const elapsedDays =
-          (new Date(tryPoint.date).getTime() - new Date(openPrice.date).getTime()) /
-          (1000 * 60 * 60 * 24);
-        const remainingDte = Math.max(1, config.dteTarget - elapsedDays);
+
+    // Check for real ThetaData quotes for this cycle date
+    const realQuotes = config.realData?.get(openPrice.date);
+    const realContract = realQuotes && realQuotes.length > 0
+      ? findContractByDelta(
+          realQuotes,
+          spot,
+          config.deltaTarget,
+          optionType,
+          config.dteTarget,
+          config.riskFreeRate,
+          config.dividendYield,
+          minCallStrike,
+        )
+      : null;
+
+    if (realContract) {
+      // --- Real data path: use actual market bid/ask ---
+      dataSource = "REAL";
+      realDataCycles++;
+      strike = realContract.strike;
+      premium = realContract.mid;
+      fillPrice = config.fillAssumption === "bid"
+        ? realContract.bid
+        : realContract.mid;
+      if (yieldFloor > 0 && openSpot > 0 && fillPrice / openSpot < yieldFloor) {
+        filled = false;
+        fillPrice = 0;
+      }
+    } else {
+      // --- BS model path (existing logic) ---
+      bsModelCycles++;
+      if (yieldFloor > 0) {
+        filled = false;
+        for (let tryIdx = idx; tryIdx <= closeIdx; tryIdx += 5) {
+          const tryPoint = prices[tryIdx];
+          if (!tryPoint) continue;
+          const trySpot = tryPoint.adjustedClose;
+          const tryRv = realizedVol(prices, tryIdx, 30);
+          const tryIv = applyRiskPremium(tryRv, config.ivRiskPremium ?? 1.15);
+          const elapsedDays =
+            (new Date(tryPoint.date).getTime() - new Date(openPrice.date).getTime()) /
+            (1000 * 60 * 60 * 24);
+          const remainingDte = Math.max(1, config.dteTarget - elapsedDays);
+          const res = findStrikeByDelta(
+            trySpot,
+            tryIv,
+            remainingDte,
+            config.riskFreeRate,
+            optionType,
+            config.deltaTarget,
+            config.strikeInterval,
+            minCallStrike,
+            config.dividendYield,
+            config.ivSkewEnabled,
+            config.termStructureEnabled,
+          );
+          const trySpread = estimateBidAskSpread(res.premium, trySpot, res.strike, optionType);
+          const tryFill = config.fillAssumption === "bid"
+            ? res.premium * (1 - trySpread / 2)
+            : res.premium;
+          if (trySpot > 0 && tryFill / trySpot >= yieldFloor) {
+            filled = true;
+            openSpot = trySpot;
+            openDate = tryPoint.date;
+            openIdx = tryIdx;
+            strike = res.strike;
+            premium = res.premium;
+            flooredByMin = res.flooredByMin;
+            break;
+          }
+          strike = res.strike;
+        }
+      } else {
         const res = findStrikeByDelta(
-          trySpot,
-          tryIv,
-          remainingDte,
+          spot,
+          iv,
+          config.dteTarget,
           config.riskFreeRate,
           optionType,
           config.deltaTarget,
@@ -601,50 +680,20 @@ export function runBacktest(
           config.ivSkewEnabled,
           config.termStructureEnabled,
         );
-        const trySpread = estimateBidAskSpread(res.premium, trySpot, res.strike, optionType);
-        const tryFill = config.fillAssumption === "bid"
-          ? res.premium * (1 - trySpread / 2)
-          : res.premium;
-        if (trySpot > 0 && tryFill / trySpot >= yieldFloor) {
-          filled = true;
-          openSpot = trySpot;
-          openDate = tryPoint.date;
-          openIdx = tryIdx;
-          strike = res.strike;
-          premium = res.premium;
-          flooredByMin = res.flooredByMin;
-          break;
-        }
-        // Keep the last attempt for display even when unfilled
         strike = res.strike;
+        premium = res.premium;
+        flooredByMin = res.flooredByMin;
       }
-    } else {
-      const res = findStrikeByDelta(
-        spot,
-        iv,
-        config.dteTarget,
-        config.riskFreeRate,
-        optionType,
-        config.deltaTarget,
-        config.strikeInterval,
-        minCallStrike,
-        config.dividendYield,
-        config.ivSkewEnabled,
-        config.termStructureEnabled,
-      );
-      strike = res.strike;
-      premium = res.premium;
-      flooredByMin = res.flooredByMin;
+      if (flooredByMin) costBasisFlooredCount++;
+      // Apply fill assumption with variable bid/ask spread
+      const spreadPct = filled ? estimateBidAskSpread(premium, openSpot, strike, optionType) : 0;
+      fillPrice = filled
+        ? config.fillAssumption === "bid"
+          ? premium * (1 - spreadPct / 2)
+          : premium
+        : 0;
     }
-    if (flooredByMin) costBasisFlooredCount++;
 
-    // Apply fill assumption with variable bid/ask spread
-    const spreadPct = filled ? estimateBidAskSpread(premium, spot, strike, optionType) : 0;
-    const fillPrice = filled
-      ? config.fillAssumption === "bid"
-        ? premium * (1 - spreadPct / 2)
-        : premium
-      : 0;
     const premiumIncome = fillPrice * 100 * activeContracts;
     cashFromPremium += premiumIncome;
     premiumCash += premiumIncome;
@@ -796,6 +845,7 @@ export function runBacktest(
       flooredByCostBasis: flooredByMin,
       premiumYield,
       exitPremium,
+      dataSource,
     });
 
     // Update equity
@@ -886,6 +936,8 @@ export function runBacktest(
       putCycleCount - putNoFillCount > 0 ? putPremiumYieldSum / (putCycleCount - putNoFillCount) : 0,
     rolledCount,
     marketContext,
+    realDataCycles,
+    bsModelCycles,
     warnings,
   };
 }
