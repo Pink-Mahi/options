@@ -54,13 +54,10 @@ EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
-# Download Theta Terminal JAR (~41MB) and validate it — fail the build loudly
-# if the download is broken instead of silently shipping a dead terminal.
-RUN wget -q -O /app/ThetaTerminalV3.jar https://download-stable.thetadata.us/ && \
-    JAR_SIZE=$(wc -c < /app/ThetaTerminalV3.jar) && \
-    if [ "$JAR_SIZE" -lt 30000000 ]; then \
-      echo "ERROR: ThetaTerminalV3.jar is only $JAR_SIZE bytes — download invalid"; exit 1; \
-    fi
+# Theta Terminal JAR — bundled from the known-good local copy.
+# (The download-stable.thetadata.us URL served an invalid ~12MB file, which
+# made java exit instantly and the terminal never bind port 25503.)
+COPY thetadata/ThetaTerminalV3.jar /app/ThetaTerminalV3.jar
 
 # Terminal configuration (bind 0.0.0.0:25503, auth + MDDS endpoints — no secrets)
 COPY thetadata/config.toml /app/config.toml
