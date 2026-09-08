@@ -149,6 +149,10 @@ export async function POST(req: Request) {
 
     const contracts = Number(body.contracts) > 0 ? Number(body.contracts) : 1;
 
+    // Optional DTE range filter (e.g. 45-90, <=60, >=45)
+    const dteMin = Number(body.dteMin) > 0 ? Number(body.dteMin) : 0;
+    const dteMax = Number(body.dteMax) > 0 ? Number(body.dteMax) : 0;
+
     // Fetch data once
     const [hist, quote, spyHist] = await Promise.all([
       getHistoricalPrices({ symbol, range }),
@@ -162,13 +166,24 @@ export async function POST(req: Request) {
     const points = hist.data.points;
     const spyPoints = spyHist?.data.points;
 
+    // Filter DTE grid if range constraints provided
+    const sweepDtes = DTES.filter((d) => {
+      if (dteMin > 0 && d < dteMin) return false;
+      if (dteMax > 0 && d > dteMax) return false;
+      return true;
+    });
+
+    if (sweepDtes.length === 0) {
+      return NextResponse.json({ error: "No DTE values match the specified range" }, { status: 400 });
+    }
+
     // ---- Phase 1: Coarse sweep (strategy × delta × DTE × buyback) ----
     const phase1Results: OptimizeResult[] = [];
 
     for (const strategy of STRATEGIES) {
       const shares = strategy === "CASH_SECURED_PUT" ? 0 : contracts * 100;
       for (const delta of DELTAS) {
-        for (const dte of DTES) {
+        for (const dte of sweepDtes) {
           for (const buyBack of BUYBACKS) {
             const r = runOne(points, {
               strategy,

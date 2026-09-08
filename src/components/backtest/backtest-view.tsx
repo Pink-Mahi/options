@@ -105,6 +105,8 @@ export function BacktestView() {
   const [optimizing, setOptimizing] = useState(false);
   const [optimizeResults, setOptimizeResults] = useState<OptimizeResult[] | null>(null);
   const [optimizeMeta, setOptimizeMeta] = useState<{ totalCombinations: number; phase1Combinations?: number; phase2Combinations?: number; buyHoldReturn: number; modelCaveat: string } | null>(null);
+  const [optDteMin, setOptDteMin] = useState<number>(0);
+  const [optDteMax, setOptDteMax] = useState<number>(0);
 
   useEffect(() => {
     fetch("/api/backtest-presets", { cache: "no-store" })
@@ -182,6 +184,8 @@ export function BacktestView() {
           symbol,
           range,
           contracts,
+          dteMin: optDteMin > 0 ? optDteMin : undefined,
+          dteMax: optDteMax > 0 ? optDteMax : undefined,
         }),
         cache: "no-store",
       });
@@ -531,6 +535,26 @@ export function BacktestView() {
                 Export CSV
               </Button>
             )}
+            <div className="flex items-center gap-1.5">
+              <Label className="text-xs text-muted-foreground whitespace-nowrap">DTE</Label>
+              <Input
+                type="number"
+                min={0}
+                placeholder="min"
+                value={optDteMin > 0 ? optDteMin : ""}
+                onChange={(e) => setOptDteMin(Math.max(0, Number(e.target.value) || 0))}
+                className="w-16 h-8 text-xs"
+              />
+              <span className="text-xs text-muted-foreground">to</span>
+              <Input
+                type="number"
+                min={0}
+                placeholder="max"
+                value={optDteMax > 0 ? optDteMax : ""}
+                onChange={(e) => setOptDteMax(Math.max(0, Number(e.target.value) || 0))}
+                className="w-16 h-8 text-xs"
+              />
+            </div>
             <Button
               variant="default"
               onClick={runOptimizer}
@@ -752,7 +776,7 @@ export function BacktestView() {
               <div>
                 <p className="font-medium">Sweeping all DTE × buyback combinations…</p>
                 <p className="text-sm text-muted-foreground">
-                  Phase 1: sweeping 3 strategies × 6 deltas × 9 DTEs × 7 buybacks = 1,134 backtests.
+                  Phase 1: sweeping 3 strategies × 6 deltas × {optDteMin > 0 || optDteMax > 0 ? "filtered" : "9"} DTEs × 7 buybacks.
                   Phase 2: fine-tuning top 10 with toggles + min yield. This takes 1–3 minutes.
                 </p>
               </div>
