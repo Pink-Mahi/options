@@ -62,6 +62,29 @@ npx prisma db push --skip-generate
 echo "Seeding admin user..."
 node scripts/seed-admin.mjs
 
+# Start Theta Terminal if credentials are provided
+if [ -f /app/ThetaTerminalV3.jar ] && [ -n "$THETADATA_EMAIL" ] && [ -n "$THETADATA_PASSWORD" ]; then
+  echo "Starting Theta Terminal..."
+  # Create creds.txt for the terminal
+  printf "%s\n%s\n" "$THETADATA_EMAIL" "$THETADATA_PASSWORD" > /app/creds.txt
+  # Start terminal in background, redirect output to log
+  java -jar /app/ThetaTerminalV3.jar > /tmp/thetadata.log 2>&1 &
+  THETA_PID=$!
+  echo "Theta Terminal started (PID: $THETA_PID)"
+
+  # Wait for terminal to be ready (max 30 seconds)
+  for i in $(seq 1 30); do
+    if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:25503/v3" 2>/dev/null | grep -q "200\|404\|400"; then
+      echo "Theta Terminal is ready."
+      break
+    fi
+    echo "  ...waiting for terminal ($i)"
+    sleep 1
+  done
+else
+  echo "Theta Terminal not started (no JAR or missing THETADATA_EMAIL/THETADATA_PASSWORD). Backtester will use BS model."
+fi
+
 # Start Next.js
 echo "Starting Next.js on port ${PORT:-3000}..."
 exec npx next start -p "${PORT:-3000}" -H "${HOSTNAME:-0.0.0.0}"

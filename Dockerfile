@@ -29,10 +29,13 @@ FROM node:22-alpine AS runner
 
 WORKDIR /app
 
-RUN apk add --no-cache openssl postgresql16 postgresql16-client && corepack enable && corepack prepare pnpm@10 --activate
+RUN apk add --no-cache openssl postgresql16 postgresql16-client openjdk21-jre curl wget && corepack enable && corepack prepare pnpm@10 --activate
 
 ENV NODE_ENV=production
 ENV DATABASE_URL=postgresql://opc:opc_dev_password@127.0.0.1:5432/opc?schema=public
+# ThetaData credentials (optional — enables real historical options data)
+ENV THETADATA_BASE_URL=http://127.0.0.1:25503/v3
+# THETADATA_EMAIL and THETADATA_PASSWORD set at runtime from Coolify env vars
 
 # Copy only what we need
 COPY --from=builder /app/package.json ./
@@ -51,5 +54,8 @@ EXPOSE 3000
 
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
+
+# Download Theta Terminal JAR (auto-updating, ~41MB)
+RUN wget -q -O /app/ThetaTerminalV3.jar https://download-stable.thetadata.us/ || echo "Theta Terminal download failed — backtester will use BS model only"
 
 CMD ["./start.sh"]
