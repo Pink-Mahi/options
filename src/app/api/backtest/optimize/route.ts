@@ -13,6 +13,7 @@ import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { getHistoricalPrices, getQuote } from "@/features/market-data/service";
 import { runBacktest, type BacktestStrategy } from "@/lib/calculations/backtester";
+import { isThetaDataConfigured, prefetchEODChains, type ThetaDataEODQuote } from "@/features/market-data/thetadata";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -42,6 +43,8 @@ interface OptimizeResult {
   assignmentCount: number;
   earlyCloseCount: number;
   avgPremiumPerCycle: number;
+  realDataCycles: number;
+  bsModelCycles: number;
 }
 
 // Phase 1 sweep grids
@@ -80,6 +83,7 @@ function runOne(
     rollOnAssignment: boolean;
   },
   spyPoints?: Parameters<typeof runBacktest>[2],
+  realData?: Map<string, ThetaDataEODQuote[]>,
 ): OptimizeResult | null {
   try {
     const result = runBacktest(
@@ -104,6 +108,7 @@ function runOne(
         averageDownWithPremium: cfg.averageDown,
         buyBackPct: cfg.buyBackPct > 0 ? cfg.buyBackPct / 100 : undefined,
         rollOnAssignment: cfg.rollOnAssignment,
+        realData,
       },
       spyPoints,
     );
@@ -130,6 +135,8 @@ function runOne(
       assignmentCount: result.assignmentCount + result.calledAwayCount,
       earlyCloseCount: result.earlyCloseCount,
       avgPremiumPerCycle: result.avgPremiumPerCycle,
+      realDataCycles: result.realDataCycles,
+      bsModelCycles: result.bsModelCycles,
     };
   } catch {
     return null;
@@ -180,6 +187,46 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "No DTE values match the specified range" }, { status: 400 });
     }
 
+    // ---- Pre-fetch real ThetaData EOD chains (shared across ALL combinations) ----
+    // Each DTE in the sweep grid produces its own cycle dates (every
+    // round(dte * 252/365) trading days from index 30, matching the
+    // backtester's walk). Compute the union of those dates, then sample down
+    // to a cap so the prefetch stays within the request budget.
+    let realData: Map<string, ThetaDataEODQuote[]> | undefined;
+    if (isThetaDataConfigured()) {
+      const dateSet = new Set<string>();
+      for (const dte of sweepDtes) {
+        const step = Math.max(1, Math.round(dte * 252 / 365));
+        for (let i = 30; i < points.length; i += step) {
+          const p = points[i];
+          if (p) dateSet.add(p.date);
+        }
+      }
+      const allDates = Array.from(dateSet).sort();
+      // Cap the number of dates fetched. Default 40 keeps free-tier prefetch
+      // (~2.1s/req) under ~85s. Raise THETADATA_OPTIMIZE_MAX_DATES on paid
+      // tiers (or lower THETADATA_REQ_DELAY_MS).
+      const maxDates = Number(process.env.THETADATA_OPTIMIZE_MAX_DATES ?? 40);
+      let datesToFetch = allDates;
+      if (allDates.length > maxDates) {
+        // Sample evenly across the period so every DTE gets partial coverage
+        const stride = allDates.length / maxDates;
+        datesToFetch = Array.from({ length: maxDates }, (_, k) =>
+          allDates[Math.floor(k * stride)]!,
+        );
+      }
+      if (datesToFetch.length > 0) {
+        console.log(`[optimize] Pre-fetching ${datesToFetch.length} EOD chains from ThetaData (${allDates.length} cycle dates in grid)...`);
+        try {
+          realData = await prefetchEODChains(symbol, datesToFetch);
+          const withData = Array.from(realData.values()).filter((q) => q.length > 0).length;
+          console.log(`[optimize] ThetaData prefetch complete (${withData}/${datesToFetch.length} dates returned data)`);
+        } catch (err) {
+          console.warn("[optimize] ThetaData prefetch failed, using BS model:", err);
+        }
+      }
+    }
+
     // ---- Phase 1: Coarse sweep (strategy × delta × DTE × buyback) ----
     const phase1Results: OptimizeResult[] = [];
 
@@ -201,7 +248,7 @@ export async function POST(req: Request) {
               neverBelowCost: false,
               averageDown: false,
               rollOnAssignment: false,
-            }, spyPoints);
+            }, spyPoints, realData);
             if (r) phase1Results.push(r);
           }
         }
@@ -244,7 +291,7 @@ export async function POST(req: Request) {
             neverBelowCost: bools.neverBelowCost,
             averageDown: bools.averageDown,
             rollOnAssignment: bools.rollOnAssignment,
-          }, spyPoints);
+          }, spyPoints, realData);
           if (r) allResults.push(r);
         }
       }
@@ -262,8 +309,12 @@ export async function POST(req: Request) {
       phase2Combinations: allResults.length - phase1Results.length,
       topResults: top20,
       buyHoldReturn: top20[0]?.buyHoldReturn ?? 0,
-      modelCaveat:
-        "Option premiums are modeled with Black-Scholes using trailing 30-day realized volatility, not historical option quotes. Rankings are comparative within the same model, not absolute predictions. Past performance does not guarantee future results. Run a single backtest with ThetaData configured for real-data verification.",
+      realDataUsed: (top20[0]?.realDataCycles ?? 0) > 0,
+      modelCaveat: realData && (top20[0]?.realDataCycles ?? 0) > 0
+        ? `Option premiums use real historical bid/ask from ThetaData where available. The optimizer sampled ${Number(process.env.THETADATA_OPTIMIZE_MAX_DATES ?? 40)} cycle dates across the sweep grid, so each combination blends real quotes with Black-Scholes fallback (see the Real column). Rankings compare strategies under the same data, not absolute predictions. Run a single backtest for full per-cycle real data.`
+        : realData
+          ? "ThetaData terminal is configured but no real data was returned for the sampled dates. All combinations use Black-Scholes model. Check that the terminal is running and the range is within your subscription tier."
+          : "Option premiums are modeled with Black-Scholes using trailing 30-day realized volatility, not historical option quotes. Rankings are comparative within the same model, not absolute predictions. Past performance does not guarantee future results.",
     });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });

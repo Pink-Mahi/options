@@ -72,7 +72,7 @@ export async function POST(req: Request) {
       if (datesToFetch.length > 0) {
         console.log(`[backtest] Pre-fetching ${datesToFetch.length} EOD chains from ThetaData...`);
         try {
-          realData = await prefetchEODChains(symbol, datesToFetch, dteTarget);
+          realData = await prefetchEODChains(symbol, datesToFetch);
           console.log(`[backtest] ThetaData prefetch complete (${realData.size} dates)`);
         } catch (err) {
           console.warn("[backtest] ThetaData prefetch failed, using BS model:", err);

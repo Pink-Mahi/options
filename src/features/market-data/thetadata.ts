@@ -17,6 +17,7 @@
  */
 
 import "server-only";
+import { impliedVolatility, blackScholes } from "@/lib/calculations/pricing-model";
 
 export interface ThetaDataEODQuote {
   date: string; // YYYY-MM-DD
@@ -214,20 +215,21 @@ export async function fetchEODContract(
 
 /**
  * Pre-fetch EOD chain data for multiple dates (used by the backtester).
- * Respects rate limits by processing sequentially.
+ * Processes sequentially with a configurable delay between requests.
  *
  * @param symbol Stock ticker
  * @param dates Array of date strings (YYYY-MM-DD) to fetch chains for
- * @param maxDte Optional: only return contracts with DTE <= this value
- * @returns Map of date -> quotes array
+ * @returns Map of date -> quotes array (all strikes, all expirations)
  */
 export async function prefetchEODChains(
   symbol: string,
   dates: string[],
-  maxDte?: number,
 ): Promise<Map<string, ThetaDataEODQuote[]>> {
   const cache = new Map<string, ThetaDataEODQuote[]>();
   const base = getBaseUrl();
+  // Free tier: 30 req/min = ~2s between requests. Paid tiers can lower this
+  // via THETADATA_REQ_DELAY_MS (e.g. 200 for Pro).
+  const delayMs = Number(process.env.THETADATA_REQ_DELAY_MS ?? 2100);
 
   for (const date of dates) {
     const dateParam = formatDate(date);
@@ -241,10 +243,6 @@ export async function prefetchEODChains(
       right: "both",
       format: "json",
     });
-
-    if (maxDte && maxDte > 0) {
-      params.set("max_dte", String(maxDte));
-    }
 
     const url = `${base}/option/history/eod?${params.toString()}`;
 
@@ -295,8 +293,10 @@ export async function prefetchEODChains(
       cache.set(date, []);
     }
 
-    // Rate limit: 30 req/min for free tier = 1 req per 2 seconds
-    await new Promise((resolve) => setTimeout(resolve, 2100));
+    // Rate limit delay between requests (see THETADATA_REQ_DELAY_MS)
+    if (delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
   }
 
   return cache;
@@ -306,7 +306,13 @@ export async function prefetchEODChains(
  * Find the option contract closest to a target delta using real market data.
  * Returns the real bid/ask and the strike, or null if no suitable contract found.
  *
- * Since ThetaData free tier doesn't include Greeks, we back out IV from
+ * The fetched chain contains contracts across ALL expirations, so this first
+ * selects the expiration whose DTE (expiration - quote date) is closest to the
+ * requested dte, then searches strikes within that single expiration. Without
+ * this filter, a 7-DTE and a 180-DTE contract at the same strike would both be
+ * priced as if they were the same DTE.
+ *
+ * Since ThetaData doesn't include Greeks on EOD quotes, we back out IV from
  * the real mid price using our IV solver, then compute delta from that IV.
  */
 export function findContractByDelta(
@@ -319,19 +325,44 @@ export function findContractByDelta(
   dividendYield?: number,
   minStrike?: number,
 ): { strike: number; bid: number; ask: number; mid: number; delta: number; iv: number } | null {
-  // Filter to the right option type and sort by strike
-  const filtered = quotes
+  // Filter to the right option type with some market
+  const withMarket = quotes
     .filter((q) => q.right === optionType)
-    .filter((q) => q.bid > 0 || q.ask > 0) // must have some market
-    .filter((q) => minStrike == null || q.strike >= minStrike)
+    .filter((q) => q.bid > 0 || q.ask > 0)
+    .filter((q) => minStrike == null || q.strike >= minStrike);
+
+  if (withMarket.length === 0) return null;
+
+  // --- Select the expiration closest to the target DTE ---
+  // Each quote carries its own date + expiration; compute actual DTE per
+  // expiration and pick the closest match to the requested dte.
+  const expDte = new Map<string, number>();
+  for (const q of withMarket) {
+    if (expDte.has(q.expiration)) continue;
+    const d =
+      (new Date(q.expiration).getTime() - new Date(q.date).getTime()) /
+      (1000 * 60 * 60 * 24);
+    expDte.set(q.expiration, d);
+  }
+  let bestExp: string | null = null;
+  let bestExpDiff = Infinity;
+  for (const [exp, d] of expDte) {
+    const diff = Math.abs(d - dte);
+    if (diff < bestExpDiff) {
+      bestExpDiff = diff;
+      bestExp = exp;
+    }
+  }
+  if (bestExp == null) return null;
+
+  const filtered = withMarket
+    .filter((q) => q.expiration === bestExp)
     .sort((a, b) => a.strike - b.strike);
 
   if (filtered.length === 0) return null;
 
-  // Lazy-load IV solver and BS to avoid circular deps
-  const { impliedVolatility, blackScholes } = require("@/lib/calculations/pricing-model");
-
-  const T = dte / 365;
+  // Use the ACTUAL DTE of the chosen expiration (not the requested target)
+  const T = (expDte.get(bestExp) ?? dte) / 365;
   let best: { strike: number; bid: number; ask: number; mid: number; delta: number; iv: number } | null = null;
   let bestDiff = Infinity;
 

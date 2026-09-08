@@ -44,6 +44,8 @@ interface OptimizeResult {
   assignmentCount: number;
   earlyCloseCount: number;
   avgPremiumPerCycle: number;
+  realDataCycles: number;
+  bsModelCycles: number;
 }
 
 interface PresetData {
@@ -110,7 +112,7 @@ export function BacktestView() {
   const [presetDropdownOpen, setPresetDropdownOpen] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
   const [optimizeResults, setOptimizeResults] = useState<OptimizeResult[] | null>(null);
-  const [optimizeMeta, setOptimizeMeta] = useState<{ totalCombinations: number; phase1Combinations?: number; phase2Combinations?: number; buyHoldReturn: number; modelCaveat: string } | null>(null);
+  const [optimizeMeta, setOptimizeMeta] = useState<{ totalCombinations: number; phase1Combinations?: number; phase2Combinations?: number; buyHoldReturn: number; modelCaveat: string; realDataUsed?: boolean } | null>(null);
   const [optDteMin, setOptDteMin] = useState<number>(0);
   const [optDteMax, setOptDteMax] = useState<number>(0);
 
@@ -206,6 +208,7 @@ export function BacktestView() {
           phase2Combinations: data.phase2Combinations,
           buyHoldReturn: data.buyHoldReturn ?? 0,
           modelCaveat: data.modelCaveat ?? "",
+          realDataUsed: data.realDataUsed ?? false,
         });
       }
     } catch (e) {
@@ -801,6 +804,9 @@ export function BacktestView() {
             <CardTitle className="flex items-center gap-2 text-base">
               <Sparkles className="h-4 w-4 text-primary" />
               Top 20 optimized strategies
+              {optimizeMeta.realDataUsed && (
+                <Badge variant="profit" className="text-xs">ThetaData</Badge>
+              )}
             </CardTitle>
             <CardDescription>
               {optimizeMeta.totalCombinations} combinations tested
@@ -830,6 +836,7 @@ export function BacktestView() {
                     <TableHead className="text-right">Win Rate</TableHead>
                     <TableHead className="text-right">Max DD</TableHead>
                     <TableHead className="text-right">Sharpe</TableHead>
+                    <TableHead className="text-right">Real</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -870,6 +877,9 @@ export function BacktestView() {
                       <TableCell className="text-right">{formatPercent(r.winRate, 0)}</TableCell>
                       <TableCell className="text-right text-loss">{formatPercent(r.maxDrawdown)}</TableCell>
                       <TableCell className="text-right">{r.sharpeRatio != null ? r.sharpeRatio.toFixed(2) : "—"}</TableCell>
+                      <TableCell className="text-right text-xs whitespace-nowrap">
+                        {r.realDataCycles > 0 ? `${r.realDataCycles}/${r.totalCycles}` : "—"}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
