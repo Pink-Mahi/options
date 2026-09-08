@@ -27,6 +27,12 @@ export interface ThetaDataEODQuote {
   bid: number;
   ask: number;
   mid: number;
+  /** Traded high for the day (0 when the contract did not trade) */
+  high: number;
+  /** Traded low for the day (0 when the contract did not trade) */
+  low: number;
+  /** Option closing print */
+  close: number;
   volume: number;
   openInterest: number;
   underlyingPrice: number;
@@ -161,6 +167,9 @@ export async function fetchEODChain(
       bid,
       ask,
       mid: bid > 0 && ask > 0 ? (bid + ask) / 2 : 0,
+      high: eodData.high ?? 0,
+      low: eodData.low ?? 0,
+      close: eodData.close ?? 0,
       volume: eodData.volume ?? 0,
       openInterest: eodData.open_interest ?? 0,
       underlyingPrice: 0,
@@ -172,7 +181,9 @@ export async function fetchEODChain(
 
 /**
  * Fetch EOD quotes for a specific contract (symbol + expiration + strike + right)
- * over a date range. Useful for buy-back simulation.
+ * over a date range. Returns one row per trading day — used for GTC
+ * touch simulation (a resting order fills the day the price trades
+ * through its limit, which daily high/low captures).
  */
 export async function fetchEODContract(
   symbol: string,
@@ -212,28 +223,55 @@ export async function fetchEODContract(
   const quotes: ThetaDataEODQuote[] = [];
   for (const entry of entries) {
     const contract = entry.contract;
-    const eodData = entry.data?.[0];
-    if (!contract || !eodData) continue;
+    if (!contract) continue;
 
-    const bid = eodData.bid ?? 0;
-    const ask = eodData.ask ?? 0;
-    const createdDate = eodData.created?.slice(0, 10) ?? "";
+    // A ranged request returns one row per trading day in entry.data —
+    // iterate all of them, not just the first.
+    for (const eodData of entry.data ?? []) {
+      const bid = eodData.bid ?? 0;
+      const ask = eodData.ask ?? 0;
+      const createdDate = eodData.created?.slice(0, 10) ?? "";
 
-    quotes.push({
-      date: createdDate,
-      expiration: contract.expiration,
-      strike: contract.strike,
-      right: right,
-      bid,
-      ask,
-      mid: bid > 0 && ask > 0 ? (bid + ask) / 2 : 0,
-      volume: eodData.volume ?? 0,
-      openInterest: eodData.open_interest ?? 0,
-      underlyingPrice: 0,
-    });
+      quotes.push({
+        date: createdDate,
+        expiration: contract.expiration,
+        strike: contract.strike,
+        right: right,
+        bid,
+        ask,
+        mid: bid > 0 && ask > 0 ? (bid + ask) / 2 : 0,
+        high: eodData.high ?? 0,
+        low: eodData.low ?? 0,
+        close: eodData.close ?? 0,
+        volume: eodData.volume ?? 0,
+        openInterest: eodData.open_interest ?? 0,
+        underlyingPrice: 0,
+      });
+    }
   }
 
   return quotes;
+}
+
+/**
+ * Fetch daily EOD rows for a specific contract, keyed by date (YYYY-MM-DD).
+ * Backtester hook for GTC touch simulation. Empty map = no data available
+ * (caller should fall back to modeled checks).
+ */
+export async function fetchContractDailyRows(
+  symbol: string,
+  expiration: string,
+  strike: number,
+  right: "CALL" | "PUT",
+  startDate: string,
+  endDate: string,
+): Promise<Map<string, ThetaDataEODQuote>> {
+  const rows = await fetchEODContract(symbol, expiration, strike, right, startDate, endDate);
+  const map = new Map<string, ThetaDataEODQuote>();
+  for (const row of rows) {
+    if (row.date) map.set(row.date, row);
+  }
+  return map;
 }
 
 /**
@@ -332,6 +370,9 @@ export async function prefetchEODChains(
           bid,
           ask,
           mid: bid > 0 && ask > 0 ? (bid + ask) / 2 : 0,
+          high: eodData.high ?? 0,
+          low: eodData.low ?? 0,
+          close: eodData.close ?? 0,
           volume: eodData.volume ?? 0,
           openInterest: eodData.open_interest ?? 0,
           underlyingPrice: 0,
@@ -390,7 +431,7 @@ export function findContractByDelta(
   riskFreeRate: number,
   dividendYield?: number,
   minStrike?: number,
-): { strike: number; bid: number; ask: number; mid: number; delta: number; iv: number } | null {
+): { strike: number; bid: number; ask: number; mid: number; delta: number; iv: number; expiration: string } | null {
   // Filter to the right option type with some market
   const withMarket = quotes
     .filter((q) => q.right === optionType)
@@ -429,7 +470,7 @@ export function findContractByDelta(
 
   // Use the ACTUAL DTE of the chosen expiration (not the requested target)
   const T = (expDte.get(bestExp) ?? dte) / 365;
-  let best: { strike: number; bid: number; ask: number; mid: number; delta: number; iv: number } | null = null;
+  let best: { strike: number; bid: number; ask: number; mid: number; delta: number; iv: number; expiration: string } | null = null;
   let bestDiff = Infinity;
 
   for (const q of filtered) {
@@ -471,6 +512,7 @@ export function findContractByDelta(
         mid: q.mid,
         delta,
         iv,
+        expiration: q.expiration,
       };
     }
   }

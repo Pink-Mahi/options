@@ -64,7 +64,7 @@ const BOOLEANS: { neverBelowCost: boolean; averageDown: boolean; rollOnAssignmen
   { neverBelowCost: true, averageDown: true, rollOnAssignment: true },
 ];
 
-function runOne(
+async function runOne(
   points: Parameters<typeof runBacktest>[0],
   cfg: {
     strategy: BacktestStrategy;
@@ -84,9 +84,9 @@ function runOne(
   },
   spyPoints?: Parameters<typeof runBacktest>[2],
   realData?: Map<string, ThetaDataEODQuote[]>,
-): OptimizeResult | null {
+): Promise<OptimizeResult | null> {
   try {
-    const result = runBacktest(
+    const result = await runBacktest(
       points,
       {
         strategy: cfg.strategy,
@@ -285,7 +285,7 @@ export async function POST(req: Request) {
           for (const delta of DELTAS) {
             for (const dte of sweepDtes) {
               for (const buyBack of BUYBACKS) {
-                const r = runOne(points, {
+                const r = await runOne(points, {
                   strategy,
                   symbol,
                   deltaTarget: delta,
@@ -335,7 +335,7 @@ export async function POST(req: Request) {
                 continue;
               }
 
-              const r = runOne(points, {
+              const r = await runOne(points, {
                 strategy: base.strategy as BacktestStrategy,
                 symbol,
                 deltaTarget: base.deltaTarget,

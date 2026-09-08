@@ -77,7 +77,7 @@ export async function POST(req: Request) {
     // the income strategy actually performs on this stock.
     let backtestSummary: BacktestSummary | null = null;
     try {
-      const bt = runBacktest(points, {
+      const bt = await runBacktest(points, {
         strategy: "COVERED_CALL",
         symbol,
         deltaTarget: 0.30,

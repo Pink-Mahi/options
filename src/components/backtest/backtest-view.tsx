@@ -756,8 +756,9 @@ export function BacktestView() {
               <strong className="text-foreground">Min call yield %</strong> simulates a resting GTC limit
               order: the call is only sold if the premium is at least this % of the stock price (e.g. 2.5 =
               sell only if you collect $2.50 per $100 of stock). The backtester re-checks every 5 trading days
-              within the cycle — if it never reaches your price, the order doesn&apos;t fill and your shares sit
-              uncovered that cycle. Set to 0 to always sell at market.
+              within the cycle — and on cycles with real data, also against each day&apos;s traded high, so a
+              mid-day spike to your price fills the order. If it never reaches your price, the order
+              doesn&apos;t fill and your shares sit uncovered that cycle. Set to 0 to always sell at market.
             </p>
             <p>
               <strong className="text-foreground">Think of it like renting out a house:</strong> the
@@ -780,7 +781,10 @@ export function BacktestView() {
               <strong className="text-foreground">Buy back at % profit</strong> places a GTC order to close
               the option early once it decays to that profit level. E.g. 50 = if you sold for $2.00, the order
               buys back at $1.00 — you keep $1.00 and free the position for a new cycle immediately. Checked
-              daily. Common values: 50% (Tastytrade-style), 75%, 80%. 0 = hold to expiration.
+              daily. On cycles with real data, the order is simulated against each day&apos;s traded low/ask — it
+              fills the moment the price trades through your limit intraday, not just at the close (marked
+              &quot;intraday&quot; in the trade log). Common values: 50% (Tastytrade-style), 75%, 80%. 0 = hold to
+              expiration.
             </p>
             <p>
               <strong className="text-foreground">Min put yield %</strong> is the same GTC limit-order
@@ -1226,6 +1230,12 @@ export function BacktestView() {
                 {result.earlyCloseCount > 0 && (
                   <Row label="Closed early (buy-back)" value={String(result.earlyCloseCount)} />
                 )}
+                {(result.touchCycles ?? 0) > 0 && (
+                  <Row
+                    label="GTC intraday fills"
+                    value={`${result.touchExitCount ?? 0} buy-backs + ${result.touchEntryCount ?? 0} entries (of ${result.touchCycles} cycles with daily data)`}
+                  />
+                )}
                 {result.rolledCount > 0 && (
                   <Row label="Calls rolled" value={String(result.rolledCount)} />
                 )}
@@ -1300,9 +1310,23 @@ export function BacktestView() {
                         <TableCell className="text-right">{formatCurrency(t.strike, 2)}</TableCell>
                         <TableCell className="text-right">{formatCurrency(t.stockPriceAtOpen, 2)}</TableCell>
                         <TableCell className="text-right">{formatCurrency(t.stockPriceAtClose, 2)}</TableCell>
-                        <TableCell className="text-right">{formatCurrency(t.premiumIncome, 2)}</TableCell>
+                        <TableCell className="text-right">
+                          {formatCurrency(t.premiumIncome, 2)}
+                          {t.entryByTouch && (
+                            <span className="ml-1 text-xs text-primary">(intraday)</span>
+                          )}
+                        </TableCell>
                         <TableCell className="text-right text-xs">
-                          {t.exitPremium != null ? formatCurrency(t.exitPremium, 2) : "—"}
+                          {t.exitPremium != null ? (
+                            <>
+                              {formatCurrency(t.exitPremium, 2)}
+                              {t.exitByTouch && (
+                                <span className="ml-1 text-xs text-primary">(intraday)</span>
+                              )}
+                            </>
+                          ) : (
+                            "—"
+                          )}
                         </TableCell>
                         <TableCell className="text-right">
                           {t.outcome === "NO_FILL" ? "—" : formatPercent(t.premiumYield, 2)}

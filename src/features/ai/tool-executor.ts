@@ -791,7 +791,7 @@ async function execRunBacktest(args: Record<string, unknown>): Promise<ToolExecu
   // Fund the comparison with enough capital to actually hold the position.
   const startingCapital = Math.max(spot * Math.max(shares, contracts * 100), 1);
 
-  const result = runBacktest(hist.data.points, {
+  const result = await runBacktest(hist.data.points, {
     strategy,
     symbol,
     deltaTarget: num(args.deltaTarget) ?? 0.3,

@@ -9,7 +9,7 @@ import { NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth";
 import { getHistoricalPrices, getQuote } from "@/features/market-data/service";
 import { runBacktest, type BacktestStrategy } from "@/lib/calculations/backtester";
-import { isThetaDataConfigured, prefetchEODChains } from "@/features/market-data/thetadata";
+import { isThetaDataConfigured, prefetchEODChains, fetchContractDailyRows, type ThetaDataEODQuote } from "@/features/market-data/thetadata";
 
 export const dynamic = "force-dynamic";
 
@@ -60,7 +60,7 @@ export async function POST(req: Request) {
     // Pre-fetch real EOD option chains from ThetaData if terminal is configured.
     // The backtester looks up real bid/ask by date, falling back to BS model
     // for any dates not in the map.
-    let realData: Map<string, import("@/features/market-data/thetadata").ThetaDataEODQuote[]> | undefined;
+    let realData: Map<string, ThetaDataEODQuote[]> | undefined;
     if (isThetaDataConfigured()) {
       const cycleDates: string[] = [];
       for (let i = 30; i < hist.data.points.length; i += tradingDaysPerCycle) {
@@ -85,7 +85,43 @@ export async function POST(req: Request) {
       }
     }
 
-    const result = runBacktest(
+    // GTC touch simulation: the backtester asks for daily rows (bid/ask/
+    // high/low/close) of each contract it sells, and fills resting orders
+    // the day the price trades through the limit. Cached per contract and
+    // rate-limited like the chain prefetch.
+    let getDailyRows: Parameters<typeof runBacktest>[1]["getDailyRows"];
+    let touchFetchCount = 0;
+    if (realData) {
+      const rowsCache = new Map<string, Map<string, ThetaDataEODQuote>>();
+      const reqDelayMs = Number(process.env.THETADATA_REQ_DELAY_MS ?? 2100);
+      getDailyRows = async (c) => {
+        const key = `${c.optionType}|${c.strike}|${c.expiration}`;
+        const cached = rowsCache.get(key);
+        if (cached) return cached;
+        touchFetchCount++;
+        if (reqDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, reqDelayMs));
+        }
+        try {
+          const rows = await fetchContractDailyRows(
+            symbol,
+            c.expiration,
+            c.strike,
+            c.optionType,
+            c.from,
+            c.to,
+          );
+          rowsCache.set(key, rows);
+          return rows;
+        } catch {
+          const empty = new Map<string, ThetaDataEODQuote>();
+          rowsCache.set(key, empty);
+          return empty;
+        }
+      };
+    }
+
+    const result = await runBacktest(
       hist.data.points,
       {
         strategy,
@@ -114,9 +150,16 @@ export async function POST(req: Request) {
             : undefined,
         rollOnAssignment: body.rollOnAssignment === true,
         realData,
+        getDailyRows,
       },
       spyHist?.data.points,
     );
+
+    if (getDailyRows) {
+      console.log(
+        `[backtest] GTC touch simulation: ${touchFetchCount} contract histories fetched for ${result.touchCycles} cycles (${result.touchExitCount} exit + ${result.touchEntryCount} entry intraday fills)`,
+      );
+    }
 
     return NextResponse.json({
       ...result,
@@ -130,7 +173,10 @@ export async function POST(req: Request) {
       },
       modelCaveat: isThetaDataConfigured()
         ? result.realDataCycles > 0
-          ? `Option premiums use real historical bid/ask from ThetaData for ${result.realDataCycles} of ${result.totalCycles} cycles. The remaining ${result.bsModelCycles} cycles use Black-Scholes (IV risk premium + skew + term structure) as fallback. Results are more realistic but still not an achievable track record.`
+          ? `Option premiums use real historical bid/ask from ThetaData for ${result.realDataCycles} of ${result.totalCycles} cycles. The remaining ${result.bsModelCycles} cycles use Black-Scholes (IV risk premium + skew + term structure) as fallback. Results are more realistic but still not an achievable track record.` +
+            (result.touchCycles > 0
+              ? ` GTC orders in ${result.touchCycles} cycles were simulated against daily highs/lows (intraday touches): ${result.touchExitCount} buy-backs and ${result.touchEntryCount} entries filled on a touch.`
+              : "")
           : "ThetaData terminal is configured but no real data was available for the requested dates. All cycles use Black-Scholes model. Check that the terminal is running and the date range is within your subscription tier."
         : "Option premiums are modeled with Black-Scholes using trailing 30-day realized volatility with IV risk premium (1.15x), equity skew, and term structure. Not historical option quotes. Real fills would differ, and this is not an achievable track record.",
     });

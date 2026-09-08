@@ -98,6 +98,22 @@ export interface BacktestConfig {
    * backs out IV from market prices instead of using the BS model.
    */
   realData?: Map<string, ThetaDataEODQuote[]>;
+  /**
+   * Optional async provider of daily EOD rows (bid/ask/high/low/close) for a
+   * specific contract from cycle open through expiration. When provided and
+   * rows exist, GTC orders use intraday-touch semantics: the buy-back fills
+   * the first day the option trades through the trigger (ask or traded low
+   * at/below it), and a resting min-yield sell order fills the first day the
+   * bid (or traded high) reaches the target. Days without rows fall back to
+   * the modeled checks. Only invoked for cycles with real chain data.
+   */
+  getDailyRows?: (contract: {
+    optionType: "CALL" | "PUT";
+    strike: number;
+    expiration: string;
+    from: string;
+    to: string;
+  }) => Promise<Map<string, ThetaDataEODQuote>>;
 }
 
 export interface BacktestTrade {
@@ -126,6 +142,10 @@ export interface BacktestTrade {
   exitPremium: number | null;
   /** Whether this cycle used real ThetaData quotes or BS-modeled premiums */
   dataSource: "REAL" | "BS_MODEL";
+  /** True when the early buy-back filled on an intraday touch (ask/low through the trigger) */
+  exitByTouch?: boolean;
+  /** True when the entry GTC order filled on an intraday touch (bid/high at the target) */
+  entryByTouch?: boolean;
 }
 
 export interface BacktestResult {
@@ -185,6 +205,12 @@ export interface BacktestResult {
   realDataCycles: number;
   /** Number of cycles that fell back to BS model (no real data available) */
   bsModelCycles: number;
+  /** Buy-backs filled by an intraday touch of the trigger (needs daily rows) */
+  touchExitCount: number;
+  /** Entry GTC orders filled by an intraday touch of the target price */
+  touchEntryCount: number;
+  /** Cycles that had daily contract rows available for GTC touch simulation */
+  touchCycles: number;
   warnings: string[];
 }
 
@@ -422,11 +448,11 @@ function sharpeRatio(
  * @param prices - Historical daily prices (oldest first)
  * @param config - Backtest configuration
  */
-export function runBacktest(
+export async function runBacktest(
   prices: HistoricalPricePoint[],
   config: BacktestConfig,
   benchmarkPrices?: HistoricalPricePoint[],
-): BacktestResult {
+): Promise<BacktestResult> {
   const warnings: string[] = [];
 
   if (prices.length < 60) {
@@ -461,6 +487,9 @@ export function runBacktest(
   let rolledCount = 0;
   let realDataCycles = 0;
   let bsModelCycles = 0;
+  let touchExitCount = 0;
+  let touchEntryCount = 0;
+  let touchCycles = 0;
 
   const firstPrice = prices[0];
   const lastPrice = prices[prices.length - 1];
@@ -503,6 +532,9 @@ export function runBacktest(
       marketContext: null,
       realDataCycles: 0,
       bsModelCycles: 0,
+      touchExitCount: 0,
+      touchEntryCount: 0,
+      touchCycles: 0,
       warnings: ["No price data available."],
     };
   }
@@ -591,6 +623,11 @@ export function runBacktest(
     let flooredByMin = false;
     let filled = true;
     let fillPrice = 0;
+    let entryByTouch = false;
+    /** Real expiration of the contract picked on the real-data path */
+    let realExpiration: string | null = null;
+    /** Whether this cycle already counted toward touchCycles */
+    let countedTouchCycle = false;
 
     const yieldFloor =
       optionType === "CALL"
@@ -621,9 +658,53 @@ export function runBacktest(
       fillPrice = config.fillAssumption === "bid"
         ? realContract.bid
         : realContract.mid;
+      realExpiration = realContract.expiration;
       if (yieldFloor > 0 && openSpot > 0 && fillPrice / openSpot < yieldFloor) {
-        filled = false;
-        fillPrice = 0;
+        // The GTC sell order rests at the floor price (floor × spot at open).
+        // With daily rows for the candidate contract we can simulate an
+        // intraday touch fill — the bid (or traded high) reaching the target
+        // mid-day fills the order even when the close was below it.
+        let touchedEntry = false;
+        if (config.getDailyRows) {
+          const entryRows = await config.getDailyRows({
+            optionType,
+            strike: realContract.strike,
+            expiration: realContract.expiration,
+            from: openPrice.date,
+            to: closePrice.date,
+          });
+          if (entryRows.size > 0) {
+            countedTouchCycle = true;
+            touchCycles++;
+            const target = yieldFloor * spot;
+            for (let d = idx; d <= closeIdx; d++) {
+              const p = prices[d];
+              if (!p) continue;
+              const row = entryRows.get(p.date);
+              if (!row) continue;
+              if (
+                (row.bid > 0 && row.bid >= target) ||
+                (row.high > 0 && row.high >= target)
+              ) {
+                filled = true;
+                touchedEntry = true;
+                fillPrice = target;
+                premium = target;
+                openSpot = p.adjustedClose;
+                openDate = p.date;
+                openIdx = d;
+                break;
+              }
+            }
+          }
+        }
+        if (touchedEntry) {
+          touchEntryCount++;
+          entryByTouch = true;
+        } else {
+          filled = false;
+          fillPrice = 0;
+        }
       }
     } else {
       // --- BS model path (existing logic) ---
@@ -712,18 +793,69 @@ export function runBacktest(
     // --- GTC buy-back simulation ------------------------------------------
     // A resting limit order to close the position once the option decays to
     // (1 - buyBackPct) of the sale price. Checked daily from fill to expiry.
+    // With daily rows for the sold contract, the order is simulated with
+    // intraday-touch semantics: it fills the first day the option trades
+    // through the trigger — the ask dropping to it (marketable), or the
+    // traded low touching it. Days with rows suppress the BS estimate (the
+    // real close already showed no fill); days without rows fall back to
+    // the modeled re-pricing.
     const buyBackPct = config.buyBackPct ?? 0;
     let exitPremium: number | null = null;
+    let exitByTouch = false;
     let effCloseIdx = closeIdx;
     let effCloseDate = closePrice.date;
     let effCloseSpot = closeSpot;
 
     if (filled && buyBackPct > 0 && buyBackPct < 1) {
       const trigger = fillPrice * (1 - buyBackPct);
+      let dailyRows: Map<string, ThetaDataEODQuote> | undefined;
+      if (config.getDailyRows && dataSource === "REAL" && realExpiration) {
+        try {
+          const fetched = await config.getDailyRows({
+            optionType,
+            strike,
+            expiration: realExpiration,
+            from: openDate,
+            to: closePrice.date,
+          });
+          if (fetched.size > 0) {
+            dailyRows = fetched;
+            if (!countedTouchCycle) {
+              countedTouchCycle = true;
+              touchCycles++;
+            }
+          }
+        } catch {
+          dailyRows = undefined;
+        }
+      }
       for (let d = openIdx + 1; d <= closeIdx; d++) {
         const p = prices[d];
         if (!p) continue;
         const dSpot = p.adjustedClose;
+        const row = dailyRows?.get(p.date);
+        if (row) {
+          if (row.ask > 0 && row.ask <= trigger) {
+            // Ask dropped to the trigger — buy at the ask.
+            exitPremium = row.ask;
+            exitByTouch = true;
+            effCloseIdx = d;
+            effCloseDate = p.date;
+            effCloseSpot = dSpot;
+            break;
+          }
+          if (row.low > 0 && row.low <= trigger) {
+            // Traded through the trigger intraday — fill at the limit price.
+            exitPremium = trigger;
+            exitByTouch = true;
+            effCloseIdx = d;
+            effCloseDate = p.date;
+            effCloseSpot = dSpot;
+            break;
+          }
+          // Real quotes show no touch today — skip the modeled check.
+          continue;
+        }
         const dRv = realizedVol(prices, d, 30);
         const dIv = applyRiskPremium(dRv, config.ivRiskPremium ?? 1.15);
         const remainingDays =
@@ -771,6 +903,7 @@ export function runBacktest(
       // Bought back early at the GTC target — keep the difference as profit.
       outcome = "BOUGHT_BACK";
       earlyCloseCount++;
+      if (exitByTouch) touchExitCount++;
       const buybackCost = exitPremium * 100 * activeContracts;
       if (optionType === "CALL") {
         // Shares still held; mark stock move open -> buyback date.
@@ -850,6 +983,8 @@ export function runBacktest(
       premiumYield,
       exitPremium,
       dataSource,
+      exitByTouch,
+      entryByTouch,
     });
 
     // Update equity
@@ -942,6 +1077,9 @@ export function runBacktest(
     marketContext,
     realDataCycles,
     bsModelCycles,
+    touchExitCount,
+    touchEntryCount,
+    touchCycles,
     warnings,
   };
 }
