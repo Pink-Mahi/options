@@ -23,9 +23,15 @@ import type { MarketContext } from "@/lib/calculations/market-context";
 import { Save, Bookmark, Trash2, ChevronDown, Sparkles } from "lucide-react";
 
 interface OptimizeResult {
+  strategy: string;
   dte: number;
   buyBackPct: number;
   deltaTarget: number;
+  minCallYieldPct: number;
+  minPutYieldPct: number;
+  neverBelowCost: boolean;
+  averageDown: boolean;
+  rollOnAssignment: boolean;
   strategyReturn: number;
   annualizedReturn: number;
   buyHoldReturn: number;
@@ -98,7 +104,7 @@ export function BacktestView() {
   const [presetDropdownOpen, setPresetDropdownOpen] = useState(false);
   const [optimizing, setOptimizing] = useState(false);
   const [optimizeResults, setOptimizeResults] = useState<OptimizeResult[] | null>(null);
-  const [optimizeMeta, setOptimizeMeta] = useState<{ totalCombinations: number; buyHoldReturn: number; modelCaveat: string } | null>(null);
+  const [optimizeMeta, setOptimizeMeta] = useState<{ totalCombinations: number; phase1Combinations?: number; phase2Combinations?: number; buyHoldReturn: number; modelCaveat: string } | null>(null);
 
   useEffect(() => {
     fetch("/api/backtest-presets", { cache: "no-store" })
@@ -174,17 +180,8 @@ export function BacktestView() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           symbol,
-          strategy,
           range,
-          deltaTarget,
           contracts,
-          fillAssumption,
-          neverSellCallBelowCostBasis: neverBelowCost,
-          averageDownWithPremium: averageDown,
-          startingCapital: startingCapital > 0 ? startingCapital : undefined,
-          minCallPremiumYieldPct: minYieldPct > 0 ? minYieldPct / 100 : undefined,
-          minPutPremiumYieldPct: minPutYieldPct > 0 ? minPutYieldPct / 100 : undefined,
-          rollOnAssignment,
         }),
         cache: "no-store",
       });
@@ -195,6 +192,8 @@ export function BacktestView() {
         setOptimizeResults(data.topResults ?? []);
         setOptimizeMeta({
           totalCombinations: data.totalCombinations ?? 0,
+          phase1Combinations: data.phase1Combinations,
+          phase2Combinations: data.phase2Combinations,
           buyHoldReturn: data.buyHoldReturn ?? 0,
           modelCaveat: data.modelCaveat ?? "",
         });
@@ -207,9 +206,15 @@ export function BacktestView() {
   }
 
   function applyOptimizedResult(r: OptimizeResult) {
+    setStrategy(r.strategy as StrategyOption);
     setDteTarget(r.dte);
     setBuyBackPct(r.buyBackPct);
     setDeltaTarget(r.deltaTarget);
+    setMinYieldPct(r.minCallYieldPct > 0 ? r.minCallYieldPct * 100 : 0);
+    setMinPutYieldPct(r.minPutYieldPct > 0 ? r.minPutYieldPct * 100 : 0);
+    setNeverBelowCost(r.neverBelowCost);
+    setAverageDown(r.averageDown);
+    setRollOnAssignment(r.rollOnAssignment);
     setOptimizeResults(null);
     run();
   }
@@ -747,7 +752,8 @@ export function BacktestView() {
               <div>
                 <p className="font-medium">Sweeping all DTE × buyback combinations…</p>
                 <p className="text-sm text-muted-foreground">
-                  Testing 11 DTE values × 9 buyback levels = 99 backtests. This takes 30–60 seconds.
+                  Phase 1: sweeping 3 strategies × 6 deltas × 9 DTEs × 7 buybacks = 1,134 backtests.
+                  Phase 2: fine-tuning top 10 with toggles + min yield. This takes 1–3 minutes.
                 </p>
               </div>
             </div>
@@ -763,7 +769,9 @@ export function BacktestView() {
               Top 20 optimized strategies
             </CardTitle>
             <CardDescription>
-              {optimizeMeta.totalCombinations} combinations tested, ranked by annualized return.
+              {optimizeMeta.totalCombinations} combinations tested
+              {optimizeMeta.phase1Combinations ? ` (${optimizeMeta.phase1Combinations} coarse + ${optimizeMeta.phase2Combinations ?? 0} fine-tune)` : ""},
+              ranked by annualized return.
               Buy & hold returned {formatPercent(optimizeMeta.buyHoldReturn)} over the same period.
               Click a row to run the full backtest with those settings.
             </CardDescription>
@@ -774,33 +782,46 @@ export function BacktestView() {
                 <TableHeader>
                   <TableRow>
                     <TableHead className="text-right">Rank</TableHead>
+                    <TableHead>Strategy</TableHead>
                     <TableHead className="text-right">DTE</TableHead>
                     <TableHead className="text-right">Buy back %</TableHead>
                     <TableHead className="text-right">Delta</TableHead>
+                    <TableHead className="text-right">Min Yield</TableHead>
+                    <TableHead>Toggles</TableHead>
                     <TableHead className="text-right">Ann. Return</TableHead>
                     <TableHead className="text-right">Total Return</TableHead>
-                    <TableHead className="text-right">vs Buy&Hold</TableHead>
+                    <TableHead className="text-right">vs B&H</TableHead>
                     <TableHead className="text-right">Premium</TableHead>
                     <TableHead className="text-right">Cycles</TableHead>
                     <TableHead className="text-right">Win Rate</TableHead>
                     <TableHead className="text-right">Max DD</TableHead>
                     <TableHead className="text-right">Sharpe</TableHead>
-                    <TableHead className="text-right">Early Close</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {optimizeResults.map((r, i) => (
                     <TableRow
-                      key={`${r.dte}-${r.buyBackPct}`}
+                      key={`${r.strategy}-${r.dte}-${r.buyBackPct}-${r.deltaTarget}-${r.neverBelowCost}-${r.averageDown}-${r.rollOnAssignment}-${r.minCallYieldPct}-${r.minPutYieldPct}`}
                       className="cursor-pointer hover:bg-muted/50"
                       onClick={() => applyOptimizedResult(r)}
                     >
                       <TableCell className="text-right font-medium">
                         {i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`}
                       </TableCell>
+                      <TableCell className="font-medium text-xs">
+                        {r.strategy === "COVERED_CALL" ? "CC" : r.strategy === "CASH_SECURED_PUT" ? "CSP" : "Wheel"}
+                      </TableCell>
                       <TableCell className="text-right">{r.dte}</TableCell>
                       <TableCell className="text-right">{r.buyBackPct > 0 ? `${r.buyBackPct}%` : "—"}</TableCell>
                       <TableCell className="text-right">{r.deltaTarget.toFixed(2)}</TableCell>
+                      <TableCell className="text-right">{r.minCallYieldPct > 0 || r.minPutYieldPct > 0 ? `${(r.minCallYieldPct || r.minPutYieldPct) * 100 | 0}%` : "—"}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
+                        {[
+                          r.neverBelowCost && "floor",
+                          r.averageDown && "avg↓",
+                          r.rollOnAssignment && "roll",
+                        ].filter(Boolean).join(" ") || "—"}
+                      </TableCell>
                       <TableCell className={cn("text-right font-medium", r.annualizedReturn >= 0 ? "text-profit" : "text-loss")}>
                         {formatPercent(r.annualizedReturn)}
                       </TableCell>
@@ -815,7 +836,6 @@ export function BacktestView() {
                       <TableCell className="text-right">{formatPercent(r.winRate, 0)}</TableCell>
                       <TableCell className="text-right text-loss">{formatPercent(r.maxDrawdown)}</TableCell>
                       <TableCell className="text-right">{r.sharpeRatio != null ? r.sharpeRatio.toFixed(2) : "—"}</TableCell>
-                      <TableCell className="text-right">{r.earlyCloseCount > 0 ? r.earlyCloseCount : "—"}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
