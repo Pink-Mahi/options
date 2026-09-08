@@ -31,16 +31,28 @@ export interface ThetaDataEODQuote {
   underlyingPrice: number;
 }
 
+/** Actual ThetaData v3 EOD response format. */
 interface ThetaDataEODResponse {
   data: Array<{
-    expiration: string;
-    strike: number;
-    right: string;
-    bid: number;
-    ask: number;
-    volume: number;
-    open_interest: number;
-    underlying: number;
+    contract: {
+      expiration: string;
+      symbol: string;
+      strike: number;
+      right: string; // "CALL" or "PUT"
+    };
+    data: Array<{
+      bid: number;
+      ask: number;
+      volume: number;
+      open_interest?: number;
+      close: number;
+      open: number;
+      high: number;
+      low: number;
+      count: number;
+      created: string;
+      last_trade: string;
+    }>;
   }>;
 }
 
@@ -55,6 +67,13 @@ function getBaseUrl(): string {
 /** Check if ThetaData is configured (terminal running + base URL reachable). */
 export function isThetaDataConfigured(): boolean {
   return !!process.env.THETADATA_BASE_URL || !!process.env.THETADATA_API_KEY;
+}
+
+/** Parse ThetaData right field to our canonical type. */
+function parseRight(right: string): "CALL" | "PUT" {
+  const upper = right.toUpperCase();
+  if (upper === "C" || upper === "CALL") return "CALL";
+  return "PUT";
 }
 
 /** Convert date to YYYYMMDD format for ThetaData API. */
@@ -102,21 +121,30 @@ export async function fetchEODChain(
   const json = (await res.json()) as ThetaDataEODResponse;
   if (!json.data || !Array.isArray(json.data)) return [];
 
-  return json.data.map((d) => {
-    const dateStr = typeof date === "string" ? date : date.toISOString().slice(0, 10);
-    return {
+  const quotes: ThetaDataEODQuote[] = [];
+  for (const entry of json.data) {
+    const contract = entry.contract;
+    const eodData = entry.data?.[0];
+    if (!contract || !eodData) continue;
+
+    const bid = eodData.bid ?? 0;
+    const ask = eodData.ask ?? 0;
+
+    quotes.push({
       date: dateStr,
-      expiration: d.expiration,
-      strike: d.strike,
-      right: (d.right?.toUpperCase() === "C" || d.right?.toUpperCase() === "CALL") ? "CALL" : "PUT",
-      bid: d.bid ?? 0,
-      ask: d.ask ?? 0,
-      mid: d.bid && d.ask ? (d.bid + d.ask) / 2 : 0,
-      volume: d.volume ?? 0,
-      openInterest: d.open_interest ?? 0,
-      underlyingPrice: d.underlying ?? 0,
-    };
-  });
+      expiration: contract.expiration,
+      strike: contract.strike,
+      right: parseRight(contract.right),
+      bid,
+      ask,
+      mid: bid > 0 && ask > 0 ? (bid + ask) / 2 : 0,
+      volume: eodData.volume ?? 0,
+      openInterest: eodData.open_interest ?? 0,
+      underlyingPrice: 0,
+    });
+  }
+
+  return quotes;
 }
 
 /**
@@ -157,18 +185,121 @@ export async function fetchEODContract(
   const json = (await res.json()) as ThetaDataEODResponse;
   if (!json.data || !Array.isArray(json.data)) return [];
 
-  return json.data.map((d) => ({
-    date: d.expiration, // ThetaData returns dates in the data
-    expiration: d.expiration,
-    strike: d.strike,
-    right: right,
-    bid: d.bid ?? 0,
-    ask: d.ask ?? 0,
-    mid: d.bid && d.ask ? (d.bid + d.ask) / 2 : 0,
-    volume: d.volume ?? 0,
-    openInterest: d.open_interest ?? 0,
-    underlyingPrice: d.underlying ?? 0,
-  }));
+  const quotes: ThetaDataEODQuote[] = [];
+  for (const entry of json.data) {
+    const contract = entry.contract;
+    const eodData = entry.data?.[0];
+    if (!contract || !eodData) continue;
+
+    const bid = eodData.bid ?? 0;
+    const ask = eodData.ask ?? 0;
+    const createdDate = eodData.created?.slice(0, 10) ?? "";
+
+    quotes.push({
+      date: createdDate,
+      expiration: contract.expiration,
+      strike: contract.strike,
+      right: right,
+      bid,
+      ask,
+      mid: bid > 0 && ask > 0 ? (bid + ask) / 2 : 0,
+      volume: eodData.volume ?? 0,
+      openInterest: eodData.open_interest ?? 0,
+      underlyingPrice: 0,
+    });
+  }
+
+  return quotes;
+}
+
+/**
+ * Pre-fetch EOD chain data for multiple dates (used by the backtester).
+ * Respects rate limits by processing sequentially.
+ *
+ * @param symbol Stock ticker
+ * @param dates Array of date strings (YYYY-MM-DD) to fetch chains for
+ * @param maxDte Optional: only return contracts with DTE <= this value
+ * @returns Map of date -> quotes array
+ */
+export async function prefetchEODChains(
+  symbol: string,
+  dates: string[],
+  maxDte?: number,
+): Promise<Map<string, ThetaDataEODQuote[]>> {
+  const cache = new Map<string, ThetaDataEODQuote[]>();
+  const base = getBaseUrl();
+
+  for (const date of dates) {
+    const dateParam = formatDate(date);
+
+    const params = new URLSearchParams({
+      symbol: symbol.toUpperCase(),
+      start_date: dateParam,
+      end_date: dateParam,
+      expiration: "*",
+      strike: "*",
+      right: "both",
+      format: "json",
+    });
+
+    if (maxDte && maxDte > 0) {
+      params.set("max_dte", String(maxDte));
+    }
+
+    const url = `${base}/option/history/eod?${params.toString()}`;
+
+    const headers: Record<string, string> = {};
+    const apiKey = process.env.THETADATA_API_KEY;
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+    try {
+      const res = await fetch(url, { headers, cache: "no-store" });
+      if (!res.ok) {
+        console.warn(`ThetaData fetch failed for ${symbol} on ${date}: ${res.status}`);
+        cache.set(date, []);
+        continue;
+      }
+
+      const json = (await res.json()) as ThetaDataEODResponse;
+      if (!json.data || !Array.isArray(json.data)) {
+        cache.set(date, []);
+        continue;
+      }
+
+      const quotes: ThetaDataEODQuote[] = [];
+      for (const entry of json.data) {
+        const contract = entry.contract;
+        const eodData = entry.data?.[0];
+        if (!contract || !eodData) continue;
+
+        const bid = eodData.bid ?? 0;
+        const ask = eodData.ask ?? 0;
+
+        quotes.push({
+          date,
+          expiration: contract.expiration,
+          strike: contract.strike,
+          right: parseRight(contract.right),
+          bid,
+          ask,
+          mid: bid > 0 && ask > 0 ? (bid + ask) / 2 : 0,
+          volume: eodData.volume ?? 0,
+          openInterest: eodData.open_interest ?? 0,
+          underlyingPrice: 0,
+        });
+      }
+
+      cache.set(date, quotes);
+    } catch (err) {
+      console.warn(`ThetaData fetch error for ${symbol} on ${date}:`, err);
+      cache.set(date, []);
+    }
+
+    // Rate limit: 30 req/min for free tier = 1 req per 2 seconds
+    await new Promise((resolve) => setTimeout(resolve, 2100));
+  }
+
+  return cache;
 }
 
 /**
@@ -208,15 +339,15 @@ export function findContractByDelta(
     if (q.mid <= 0) continue;
 
     // Back out IV from real market mid price
-    const iv = impliedVolatility({
+    const iv = impliedVolatility(
+      q.mid,
       spot,
-      strike: q.strike,
-      timeToExpiry: T,
+      q.strike,
+      T,
       riskFreeRate,
-      dividendYield,
-      marketPrice: q.mid,
       optionType,
-    });
+      dividendYield ?? 0,
+    );
 
     if (!iv || !Number.isFinite(iv) || iv <= 0) continue;
 
