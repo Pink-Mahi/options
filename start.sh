@@ -5,7 +5,9 @@ PGDATA=/var/lib/postgresql/data
 PGLOG=/var/lib/postgresql/pg.log
 
 # PostgreSQL runs inside this container — always use localhost.
-export DATABASE_URL="postgresql://opc:opc_dev_password@127.0.0.1:5432/opc?schema=public"
+# connection_limit=5 caps the Prisma pool so route handlers can never
+# exhaust Postgres max_connections (everything runs in one container).
+export DATABASE_URL="postgresql://opc:opc_dev_password@127.0.0.1:5432/opc?schema=public&connection_limit=5&pool_timeout=30"
 
 # Ensure postgres user exists and owns the data directory
 mkdir -p "$PGDATA"
@@ -22,15 +24,15 @@ port = 5432
 unix_socket_directories = '/tmp'
 dynamic_shared_memory_type = mmap
 shared_buffers = 32MB
-max_connections = 50
+max_connections = 200
 EOF
 else
   echo "Found existing PostgreSQL data at $PGDATA — volume persisted correctly."
 fi
 
-# Start PostgreSQL
-echo "Starting PostgreSQL..."
-su postgres -c "pg_ctl -D $PGDATA -l $PGLOG -o '-c config_file=$PGDATA/postgresql.conf' start -w" || {
+# Start PostgreSQL — max_connections forced to 200 on the command line so it
+# also overrides the lower value baked into existing persisted data dirs.
+su postgres -c "pg_ctl -D $PGDATA -l $PGLOG -o '-c config_file=$PGDATA/postgresql.conf -c max_connections=200' start -w" || {
   echo "=== PostgreSQL failed to start. Log output: ==="
   cat "$PGLOG" 2>/dev/null || echo "(no log file found)"
   exit 1

@@ -8,4 +8,8 @@ export const prisma =
     log: process.env.NODE_ENV === "development" ? ["error", "warn"] : ["error"],
   });
 
-if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+// ALWAYS cache on globalThis. Next.js bundles each route separately in
+// production, so without this every route bundle creates its own PrismaClient
+// with its own connection pool — several pools × (num_cpus × 2 + 1)
+// connections each exhausts PostgreSQL's max_connections.
+if (!globalForPrisma.prisma) globalForPrisma.prisma = prisma;
