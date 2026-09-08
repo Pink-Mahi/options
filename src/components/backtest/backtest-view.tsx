@@ -315,9 +315,9 @@ export function BacktestView() {
   function exportCsv() {
     if (!result) return;
     const rows = [
-      ["Open", "Close", "Type", "Strike", "Stock Open", "Stock Close", "Premium", "Buy-back", "Yield", "Outcome", "Data Source", "Cycle P/L", "Days", "Contracts"],
+      ["Open", "Expiration", "Close", "Type", "Strike", "Stock Open", "Stock Close", "Premium", "Buy-back", "Yield", "Outcome", "Data Source", "Cycle P/L", "Days", "Contracts"],
       ...result.trades.map((t) => [
-        t.openDate, t.closeDate, t.optionType, t.strike.toFixed(2),
+        t.openDate, t.expirationDate, t.closeDate, t.optionType, t.strike.toFixed(2),
         t.stockPriceAtOpen.toFixed(2), t.stockPriceAtClose.toFixed(2),
         t.premiumIncome.toFixed(2),
         t.exitPremium != null ? t.exitPremium.toFixed(2) : "",
@@ -1155,7 +1155,12 @@ export function BacktestView() {
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Trade log</CardTitle>
-              <CardDescription>Last {Math.min(result.trades.length, 25)} cycles.</CardDescription>
+              <CardDescription>
+                Last {Math.min(result.trades.length, 25)} cycles. After an early buy-back, the next
+                cycle opens the same day: fresh delta-target strike at the current price, and a new
+                full DTE window (new expiration). Compare a row&apos;s Expiration vs. Closed columns — when
+                Closed &lt; Expiration, that position was bought back early and re-sold immediately.
+              </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="overflow-x-auto">
@@ -1163,6 +1168,7 @@ export function BacktestView() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Opened</TableHead>
+                      <TableHead>Expiration</TableHead>
                       <TableHead>Closed</TableHead>
                       <TableHead>Type</TableHead>
                       <TableHead className="text-right">Strike</TableHead>
@@ -1174,13 +1180,22 @@ export function BacktestView() {
                       <TableHead>Outcome</TableHead>
                       <TableHead>Data</TableHead>
                       <TableHead className="text-right">Cycle P/L</TableHead>
+                      <TableHead>Next cycle</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {result.trades.slice(-25).reverse().map((t, i) => (
-                      <TableRow key={i}>
+                    {result.trades.slice(-25).reverse().map((t, i) => {
+                      const closedEarly = t.outcome === "BOUGHT_BACK" || t.outcome === "ROLLED";
+                      const nextTrade = result.trades.find(
+                        (nt) => nt.openDate === t.closeDate && nt !== t && nt.outcome !== "NO_FILL",
+                      );
+                      return (
+                      <TableRow key={i} className={cn(closedEarly && "bg-muted/30")}>
                         <TableCell className="whitespace-nowrap">{t.openDate}</TableCell>
-                        <TableCell className="whitespace-nowrap">{t.closeDate}</TableCell>
+                        <TableCell className="whitespace-nowrap text-muted-foreground">{t.expirationDate}</TableCell>
+                        <TableCell className={cn("whitespace-nowrap", closedEarly && "font-medium text-warning")}>
+                          {t.closeDate}
+                        </TableCell>
                         <TableCell>{t.optionType}</TableCell>
                         <TableCell className="text-right">{formatCurrency(t.strike, 2)}</TableCell>
                         <TableCell className="text-right">{formatCurrency(t.stockPriceAtOpen, 2)}</TableCell>
@@ -1210,8 +1225,18 @@ export function BacktestView() {
                         >
                           {formatCurrency(t.cyclePnl, 2)}
                         </TableCell>
+                        <TableCell className="text-xs whitespace-nowrap">
+                          {closedEarly && nextTrade ? (
+                            <span className="text-muted-foreground">
+                              → re-sold same day @ {formatCurrency(nextTrade.strike, 0)} strike, new exp {nextTrade.expirationDate}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
                       </TableRow>
-                    ))}
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>

@@ -102,6 +102,9 @@ export interface BacktestConfig {
 
 export interface BacktestTrade {
   openDate: string;
+  /** Targeted expiration date for this cycle (open date + DTE window) */
+  expirationDate: string;
+  /** Actual close date: expiration day, or the early buy-back / roll day */
   closeDate: string;
   optionType: "CALL" | "PUT";
   strike: number;
@@ -831,6 +834,7 @@ export function runBacktest(
 
     trades.push({
       openDate,
+      expirationDate: closePrice.date,
       closeDate: effCloseDate,
       optionType,
       strike,
