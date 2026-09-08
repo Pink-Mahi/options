@@ -388,3 +388,24 @@ model StrategyPreset {
 
   @@index([portfolioId])
 }
+
+// ---------------------------------------------------------------------------
+// Historical Price Cache (global, shared across all users)
+// ---------------------------------------------------------------------------
+
+model HistoricalPrice {
+  id            String   @id @default(cuid())
+  symbol        String
+  date          DateTime @db.Date
+  open          Decimal  @db.Decimal(18, 6)
+  high          Decimal  @db.Decimal(18, 6)
+  low           Decimal  @db.Decimal(18, 6)
+  close         Decimal  @db.Decimal(18, 6)
+  adjustedClose Decimal  @db.Decimal(18, 6)
+  volume        BigInt?
+  source        String   @default("tradier")
+  fetchedAt     DateTime @default(now())
+
+  @@unique([symbol, date])
+  @@index([symbol])
+}
