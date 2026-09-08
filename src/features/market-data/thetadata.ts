@@ -242,6 +242,7 @@ export async function prefetchEODChains(
   // Abort the whole prefetch after this many consecutive failures — the
   // terminal is down, and grinding through every date just wastes minutes.
   let consecutiveFailures = 0;
+  let done = 0;
 
   for (const date of dates) {
     if (consecutiveFailures >= 3) {
@@ -318,6 +319,13 @@ export async function prefetchEODChains(
     // Rate limit delay between requests (see THETADATA_REQ_DELAY_MS)
     if (delayMs > 0) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
+    done++;
+    // Progress feedback — a 120-date prefetch can take minutes with no
+    // other output, which looks like a hang in the container logs.
+    if (done % 20 === 0 || done === dates.length) {
+      console.log(`[thetadata] Prefetch progress: ${done}/${dates.length} chains fetched...`);
     }
   }
 
