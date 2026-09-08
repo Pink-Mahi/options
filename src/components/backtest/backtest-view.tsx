@@ -20,7 +20,25 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { cn, formatCurrency, formatPercent } from "@/lib/utils";
 import type { BacktestResult } from "@/lib/calculations/backtester";
 import type { MarketContext } from "@/lib/calculations/market-context";
-import { Save, Bookmark, Trash2, ChevronDown } from "lucide-react";
+import { Save, Bookmark, Trash2, ChevronDown, Sparkles } from "lucide-react";
+
+interface OptimizeResult {
+  dte: number;
+  buyBackPct: number;
+  deltaTarget: number;
+  strategyReturn: number;
+  annualizedReturn: number;
+  buyHoldReturn: number;
+  outperformance: number;
+  sharpeRatio: number | null;
+  maxDrawdown: number;
+  totalPremiumIncome: number;
+  winRate: number;
+  totalCycles: number;
+  assignmentCount: number;
+  earlyCloseCount: number;
+  avgPremiumPerCycle: number;
+}
 
 interface PresetData {
   id: string;
@@ -78,6 +96,9 @@ export function BacktestView() {
   const [presetName, setPresetName] = useState("");
   const [showSaveInput, setShowSaveInput] = useState(false);
   const [presetDropdownOpen, setPresetDropdownOpen] = useState(false);
+  const [optimizing, setOptimizing] = useState(false);
+  const [optimizeResults, setOptimizeResults] = useState<OptimizeResult[] | null>(null);
+  const [optimizeMeta, setOptimizeMeta] = useState<{ totalCombinations: number; buyHoldReturn: number; modelCaveat: string } | null>(null);
 
   useEffect(() => {
     fetch("/api/backtest-presets", { cache: "no-store" })
@@ -140,6 +161,57 @@ export function BacktestView() {
     fetch(`/api/backtest-presets?id=${id}`, { method: "DELETE" })
       .then(() => setPresets((prev) => prev.filter((p) => p.id !== id)))
       .catch(() => {});
+  }
+
+  async function runOptimizer() {
+    if (!symbol) return;
+    setOptimizing(true);
+    setError(null);
+    setOptimizeResults(null);
+    try {
+      const res = await fetch("/api/backtest/optimize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol,
+          strategy,
+          range,
+          deltaTarget,
+          contracts,
+          fillAssumption,
+          neverSellCallBelowCostBasis: neverBelowCost,
+          averageDownWithPremium: averageDown,
+          startingCapital: startingCapital > 0 ? startingCapital : undefined,
+          minCallPremiumYieldPct: minYieldPct > 0 ? minYieldPct / 100 : undefined,
+          minPutPremiumYieldPct: minPutYieldPct > 0 ? minPutYieldPct / 100 : undefined,
+          rollOnAssignment,
+        }),
+        cache: "no-store",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Optimization failed.");
+      } else {
+        setOptimizeResults(data.topResults ?? []);
+        setOptimizeMeta({
+          totalCombinations: data.totalCombinations ?? 0,
+          buyHoldReturn: data.buyHoldReturn ?? 0,
+          modelCaveat: data.modelCaveat ?? "",
+        });
+      }
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setOptimizing(false);
+    }
+  }
+
+  function applyOptimizedResult(r: OptimizeResult) {
+    setDteTarget(r.dte);
+    setBuyBackPct(r.buyBackPct);
+    setDeltaTarget(r.deltaTarget);
+    setOptimizeResults(null);
+    run();
   }
 
   async function run() {
@@ -454,6 +526,24 @@ export function BacktestView() {
                 Export CSV
               </Button>
             )}
+            <Button
+              variant="default"
+              onClick={runOptimizer}
+              disabled={optimizing || !symbol}
+              className="gap-1.5"
+            >
+              {optimizing ? (
+                <>
+                  <Sparkles className="h-4 w-4 animate-pulse" />
+                  Optimizing…
+                </>
+              ) : (
+                <>
+                  <Sparkles className="h-4 w-4" />
+                  Auto-Optimize
+                </>
+              )}
+            </Button>
 
             {/* Preset save/load */}
             <div className="relative ml-auto">
@@ -646,6 +736,95 @@ export function BacktestView() {
       {error && (
         <Card className="border-destructive/50">
           <CardContent className="pt-6 text-sm text-destructive">{error}</CardContent>
+        </Card>
+      )}
+
+      {optimizing && (
+        <Card className="border-primary/30 bg-primary/5">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <Sparkles className="h-5 w-5 animate-pulse text-primary" />
+              <div>
+                <p className="font-medium">Sweeping all DTE × buyback combinations…</p>
+                <p className="text-sm text-muted-foreground">
+                  Testing 11 DTE values × 9 buyback levels = 99 backtests. This takes 30–60 seconds.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {optimizeResults && optimizeResults.length > 0 && optimizeMeta && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Sparkles className="h-4 w-4 text-primary" />
+              Top 20 optimized strategies
+            </CardTitle>
+            <CardDescription>
+              {optimizeMeta.totalCombinations} combinations tested, ranked by annualized return.
+              Buy & hold returned {formatPercent(optimizeMeta.buyHoldReturn)} over the same period.
+              Click a row to run the full backtest with those settings.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-right">Rank</TableHead>
+                    <TableHead className="text-right">DTE</TableHead>
+                    <TableHead className="text-right">Buy back %</TableHead>
+                    <TableHead className="text-right">Delta</TableHead>
+                    <TableHead className="text-right">Ann. Return</TableHead>
+                    <TableHead className="text-right">Total Return</TableHead>
+                    <TableHead className="text-right">vs Buy&Hold</TableHead>
+                    <TableHead className="text-right">Premium</TableHead>
+                    <TableHead className="text-right">Cycles</TableHead>
+                    <TableHead className="text-right">Win Rate</TableHead>
+                    <TableHead className="text-right">Max DD</TableHead>
+                    <TableHead className="text-right">Sharpe</TableHead>
+                    <TableHead className="text-right">Early Close</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {optimizeResults.map((r, i) => (
+                    <TableRow
+                      key={`${r.dte}-${r.buyBackPct}`}
+                      className="cursor-pointer hover:bg-muted/50"
+                      onClick={() => applyOptimizedResult(r)}
+                    >
+                      <TableCell className="text-right font-medium">
+                        {i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`}
+                      </TableCell>
+                      <TableCell className="text-right">{r.dte}</TableCell>
+                      <TableCell className="text-right">{r.buyBackPct > 0 ? `${r.buyBackPct}%` : "—"}</TableCell>
+                      <TableCell className="text-right">{r.deltaTarget.toFixed(2)}</TableCell>
+                      <TableCell className={cn("text-right font-medium", r.annualizedReturn >= 0 ? "text-profit" : "text-loss")}>
+                        {formatPercent(r.annualizedReturn)}
+                      </TableCell>
+                      <TableCell className={cn("text-right", r.strategyReturn >= 0 ? "text-profit" : "text-loss")}>
+                        {formatPercent(r.strategyReturn)}
+                      </TableCell>
+                      <TableCell className={cn("text-right font-medium", r.outperformance >= 0 ? "text-profit" : "text-loss")}>
+                        {formatPercent(r.outperformance)}
+                      </TableCell>
+                      <TableCell className="text-right">{formatCurrency(r.totalPremiumIncome, 0)}</TableCell>
+                      <TableCell className="text-right">{r.totalCycles}</TableCell>
+                      <TableCell className="text-right">{formatPercent(r.winRate, 0)}</TableCell>
+                      <TableCell className="text-right text-loss">{formatPercent(r.maxDrawdown)}</TableCell>
+                      <TableCell className="text-right">{r.sharpeRatio != null ? r.sharpeRatio.toFixed(2) : "—"}</TableCell>
+                      <TableCell className="text-right">{r.earlyCloseCount > 0 ? r.earlyCloseCount : "—"}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            <p className="mt-3 text-xs text-muted-foreground">
+              {optimizeMeta.modelCaveat}
+            </p>
+          </CardContent>
         </Card>
       )}
 
