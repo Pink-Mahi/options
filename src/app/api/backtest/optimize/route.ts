@@ -147,7 +147,7 @@ export async function POST(req: Request) {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: { symbol?: string; range?: string; contracts?: number; dteMin?: number; dteMax?: number };
+  let body: { symbol?: string; range?: string; contracts?: number; dteMin?: number; dteMax?: number; strategy?: string };
   try {
     body = await req.json();
   } catch {
@@ -179,7 +179,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "No DTE values match the specified range" }, { status: 400 });
   }
 
-  const phase1Total = STRATEGIES.length * DELTAS.length * sweepDtes.length * BUYBACKS.length;
+  // Optional strategy filter — if provided, only sweep that strategy.
+  // Otherwise sweep all three (existing behavior).
+  const ALLOWED_STRATEGIES: BacktestStrategy[] = ["COVERED_CALL", "CASH_SECURED_PUT", "WHEEL"];
+  const requestedStrategy = String(body.strategy ?? "").toUpperCase().trim();
+  const sweepStrategies = requestedStrategy && (ALLOWED_STRATEGIES as readonly string[]).includes(requestedStrategy)
+    ? [requestedStrategy as BacktestStrategy]
+    : ALLOWED_STRATEGIES;
+
+  const phase1Total = sweepStrategies.length * DELTAS.length * sweepDtes.length * BUYBACKS.length;
 
   // NDJSON stream: one JSON event per line. Progress events flow to the UI
   // while the sweep runs; the final line carries the full result payload.
@@ -280,7 +288,7 @@ export async function POST(req: Request) {
         const phase1Results: OptimizeResult[] = [];
         let phase1Done = 0;
 
-        for (const strategy of STRATEGIES) {
+        for (const strategy of sweepStrategies) {
           const shares = strategy === "CASH_SECURED_PUT" ? 0 : contracts * 100;
           for (const delta of DELTAS) {
             for (const dte of sweepDtes) {

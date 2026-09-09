@@ -115,6 +115,7 @@ export function BacktestView() {
   const [optimizeMeta, setOptimizeMeta] = useState<{ totalCombinations: number; phase1Combinations?: number; phase2Combinations?: number; buyHoldReturn: number; modelCaveat: string; realDataUsed?: boolean } | null>(null);
   const [optDteMin, setOptDteMin] = useState<number>(0);
   const [optDteMax, setOptDteMax] = useState<number>(0);
+  const [optStrategy, setOptStrategy] = useState<string>("ALL");
   const [optimizeProgress, setOptimizeProgress] = useState<{
     message: string;
     stage?: string;
@@ -209,6 +210,7 @@ export function BacktestView() {
           contracts,
           dteMin: optDteMin > 0 ? optDteMin : undefined,
           dteMax: optDteMax > 0 ? optDteMax : undefined,
+          strategy: optStrategy !== "ALL" ? optStrategy : undefined,
         }),
         cache: "no-store",
       });
@@ -619,6 +621,19 @@ export function BacktestView() {
                 Export CSV
               </Button>
             )}
+            <div className="flex items-center gap-1.5">
+              <Label className="text-xs text-muted-foreground whitespace-nowrap">Strategy</Label>
+              <select
+                value={optStrategy}
+                onChange={(e) => setOptStrategy(e.target.value)}
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+              >
+                <option value="ALL">All strategies</option>
+                <option value="WHEEL">Wheel</option>
+                <option value="COVERED_CALL">Covered call</option>
+                <option value="CASH_SECURED_PUT">Cash-secured put</option>
+              </select>
+            </div>
             <div className="flex items-center gap-1.5">
               <Label className="text-xs text-muted-foreground whitespace-nowrap">DTE</Label>
               <Input
