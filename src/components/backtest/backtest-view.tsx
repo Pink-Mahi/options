@@ -1090,6 +1090,179 @@ export function BacktestView() {
         </>
       )}
 
+      {/* Parameter Insights */}
+      {optimizeResults && optimizeResults.length > 3 && (() => {
+        const byDte = new Map<number, OptimizeResult>();
+        const byDelta = new Map<number, OptimizeResult>();
+        const byBuyback = new Map<number, OptimizeResult>();
+        const byStrategy = new Map<string, OptimizeResult>();
+        for (const r of optimizeResults) {
+          const curDte = byDte.get(r.dte);
+          if (!curDte || r.compositeScore > curDte.compositeScore) byDte.set(r.dte, r);
+          const curDelta = byDelta.get(r.deltaTarget);
+          if (!curDelta || r.compositeScore > curDelta.compositeScore) byDelta.set(r.deltaTarget, r);
+          const curBb = byBuyback.get(r.buyBackPct);
+          if (!curBb || r.compositeScore > curBb.compositeScore) byBuyback.set(r.buyBackPct, r);
+          const curStrat = byStrategy.get(r.strategy);
+          if (!curStrat || r.compositeScore > curStrat.compositeScore) byStrategy.set(r.strategy, r);
+        }
+        const dteRows = Array.from(byDte.entries()).sort((a, b) => a[0] - b[0]);
+        const deltaRows = Array.from(byDelta.entries()).sort((a, b) => a[0] - b[0]);
+        const bbRows = Array.from(byBuyback.entries()).sort((a, b) => a[0] - b[0]);
+        const stratRows = Array.from(byStrategy.entries());
+        const stratLabel = (s: string) => s === "COVERED_CALL" ? "Covered Call" : s === "CASH_SECURED_PUT" ? "Cash-Secured Put" : "Wheel";
+        return (
+          <Card className="border-primary/20">
+            <CardHeader>
+              <CardTitle className="text-base">Parameter insights — what matters most</CardTitle>
+              <CardDescription>
+                Best result for each parameter value. Use this to understand which settings drive returns and which ones reduce risk.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4 text-sm">
+              {/* DTE comparison */}
+              <div>
+                <p className="font-medium mb-2">DTE — shorter vs longer expiration</p>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="text-right">DTE</TableHead>
+                        <TableHead className="text-right">Ann. Return</TableHead>
+                        <TableHead className="text-right">Total Return</TableHead>
+                        <TableHead className="text-right">Cycles</TableHead>
+                        <TableHead className="text-right">Sharpe</TableHead>
+                        <TableHead className="text-right">Max DD</TableHead>
+                        <TableHead className="text-right">Win Rate</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {dteRows.map(([dte, r]) => (
+                        <TableRow key={dte}>
+                          <TableCell className="text-right font-medium">{dte}</TableCell>
+                          <TableCell className={cn("text-right font-medium", r.annualizedReturn >= 0 ? "text-profit" : "text-loss")}>{formatPercent(r.annualizedReturn)}</TableCell>
+                          <TableCell className={cn("text-right", r.strategyReturn >= 0 ? "text-profit" : "text-loss")}>{formatPercent(r.strategyReturn)}</TableCell>
+                          <TableCell className="text-right">{r.totalCycles}</TableCell>
+                          <TableCell className="text-right">{r.sharpeRatio != null ? r.sharpeRatio.toFixed(2) : "—"}</TableCell>
+                          <TableCell className="text-right text-loss">{formatPercent(r.maxDrawdown)}</TableCell>
+                          <TableCell className="text-right">{formatPercent(r.winRate, 0)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {dteRows.length > 1 && (() => {
+                    const best = dteRows.reduce((a, b) => a[1].annualizedReturn > b[1].annualizedReturn ? a : b);
+                    const worst = dteRows.reduce((a, b) => a[1].annualizedReturn < b[1].annualizedReturn ? a : b);
+                    return `Shorter DTE = more cycles per year (higher frequency). Longer DTE = more premium per trade but fewer cycles. Best annualized return: ${best[0]} DTE at ${formatPercent(best[1].annualizedReturn)}. Worst: ${worst[0]} DTE at ${formatPercent(worst[1].annualizedReturn)}.`;
+                  })()}
+                </p>
+              </div>
+
+              {/* Delta comparison */}
+              <div>
+                <p className="font-medium mb-2">Delta — strike selection aggressiveness</p>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="text-right">Delta</TableHead>
+                        <TableHead className="text-right">Ann. Return</TableHead>
+                        <TableHead className="text-right">Sharpe</TableHead>
+                        <TableHead className="text-right">Max DD</TableHead>
+                        <TableHead className="text-right">Win Rate</TableHead>
+                        <TableHead className="text-right">Assignments</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {deltaRows.map(([delta, r]) => (
+                        <TableRow key={delta}>
+                          <TableCell className="text-right font-medium">{delta.toFixed(2)}</TableCell>
+                          <TableCell className={cn("text-right font-medium", r.annualizedReturn >= 0 ? "text-profit" : "text-loss")}>{formatPercent(r.annualizedReturn)}</TableCell>
+                          <TableCell className="text-right">{r.sharpeRatio != null ? r.sharpeRatio.toFixed(2) : "—"}</TableCell>
+                          <TableCell className="text-right text-loss">{formatPercent(r.maxDrawdown)}</TableCell>
+                          <TableCell className="text-right">{formatPercent(r.winRate, 0)}</TableCell>
+                          <TableCell className="text-right">{r.assignmentCount}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Higher delta = more premium but higher assignment risk. Lower delta = less premium but higher win rate. The optimal delta balances income vs risk of holding shares.
+                </p>
+              </div>
+
+              {/* Buyback comparison */}
+              <div>
+                <p className="font-medium mb-2">Buyback % — when to close early</p>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="text-right">Buyback %</TableHead>
+                        <TableHead className="text-right">Ann. Return</TableHead>
+                        <TableHead className="text-right">Sharpe</TableHead>
+                        <TableHead className="text-right">Cycles</TableHead>
+                        <TableHead className="text-right">Win Rate</TableHead>
+                        <TableHead className="text-right">Max DD</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {bbRows.map(([bb, r]) => (
+                        <TableRow key={bb}>
+                          <TableCell className="text-right font-medium">{bb > 0 ? `${bb}%` : "Hold to expiry"}</TableCell>
+                          <TableCell className={cn("text-right font-medium", r.annualizedReturn >= 0 ? "text-profit" : "text-loss")}>{formatPercent(r.annualizedReturn)}</TableCell>
+                          <TableCell className="text-right">{r.sharpeRatio != null ? r.sharpeRatio.toFixed(2) : "—"}</TableCell>
+                          <TableCell className="text-right">{r.totalCycles}</TableCell>
+                          <TableCell className="text-right">{formatPercent(r.winRate, 0)}</TableCell>
+                          <TableCell className="text-right text-loss">{formatPercent(r.maxDrawdown)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Lower buyback % = close early, keep less premium per trade but cycle capital faster. Higher buyback % = keep more premium per trade but capital is tied up longer. 0% = hold to expiry.
+                </p>
+              </div>
+
+              {/* Strategy comparison */}
+              <div>
+                <p className="font-medium mb-2">Strategy comparison</p>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Strategy</TableHead>
+                        <TableHead className="text-right">Ann. Return</TableHead>
+                        <TableHead className="text-right">Sharpe</TableHead>
+                        <TableHead className="text-right">Max DD</TableHead>
+                        <TableHead className="text-right">Win Rate</TableHead>
+                        <TableHead className="text-right">vs B&H</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {stratRows.map(([s, r]) => (
+                        <TableRow key={s}>
+                          <TableCell className="font-medium">{stratLabel(s)}</TableCell>
+                          <TableCell className={cn("text-right font-medium", r.annualizedReturn >= 0 ? "text-profit" : "text-loss")}>{formatPercent(r.annualizedReturn)}</TableCell>
+                          <TableCell className="text-right">{r.sharpeRatio != null ? r.sharpeRatio.toFixed(2) : "—"}</TableCell>
+                          <TableCell className="text-right text-loss">{formatPercent(r.maxDrawdown)}</TableCell>
+                          <TableCell className="text-right">{formatPercent(r.winRate, 0)}</TableCell>
+                          <TableCell className={cn("text-right", r.outperformance >= 0 ? "text-profit" : "text-loss")}>{formatPercent(r.outperformance)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })()}
+
       {result && (
         <>
           {result.warnings.length > 0 && (
