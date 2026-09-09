@@ -46,6 +46,7 @@ interface OptimizeResult {
   avgPremiumPerCycle: number;
   realDataCycles: number;
   bsModelCycles: number;
+  compositeScore: number;
 }
 
 interface PresetData {
@@ -123,6 +124,7 @@ export function BacktestView() {
     total?: number;
   } | null>(null);
   const [optimizeElapsed, setOptimizeElapsed] = useState(0);
+  const [riskTolerance, setRiskTolerance] = useState(1);
 
   useEffect(() => {
     fetch("/api/backtest-presets", { cache: "no-store" })
@@ -211,6 +213,7 @@ export function BacktestView() {
           dteMin: optDteMin > 0 ? optDteMin : undefined,
           dteMax: optDteMax > 0 ? optDteMax : undefined,
           strategy: optStrategy !== "ALL" ? optStrategy : undefined,
+          riskTolerance,
         }),
         cache: "no-store",
       });
@@ -274,7 +277,8 @@ export function BacktestView() {
       }
 
       if (!payload) throw new Error("Optimization ended without results.");
-      setOptimizeResults(payload.topResults ?? []);
+      const top = payload.topResults ?? [];
+      setOptimizeResults(top);
       setOptimizeMeta({
         totalCombinations: payload.totalCombinations ?? 0,
         phase1Combinations: payload.phase1Combinations,
@@ -283,6 +287,11 @@ export function BacktestView() {
         modelCaveat: payload.modelCaveat ?? "",
         realDataUsed: payload.realDataUsed ?? false,
       });
+      // Auto-apply the #1 result so the Trading Plan appears immediately
+      const best = top.length > 0 ? top[0] : null;
+      if (best) {
+        applyOptimizedResult(best);
+      }
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -301,7 +310,6 @@ export function BacktestView() {
     setNeverBelowCost(r.neverBelowCost);
     setAverageDown(r.averageDown);
     setRollOnAssignment(r.rollOnAssignment);
-    setOptimizeResults(null);
     run();
   }
 
@@ -654,6 +662,20 @@ export function BacktestView() {
                 className="w-16 h-8 text-xs"
               />
             </div>
+            <div className="flex items-center gap-1.5">
+              <Label className="text-xs text-muted-foreground whitespace-nowrap" title="Conservative = prioritize Sharpe & low drawdown. Aggressive = prioritize return.">
+                Risk:
+              </Label>
+              <select
+                value={riskTolerance}
+                onChange={(e) => setRiskTolerance(Number(e.target.value))}
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+              >
+                <option value={0}>Conservative</option>
+                <option value={1}>Balanced</option>
+                <option value={2}>Aggressive</option>
+              </select>
+            </div>
             <Button
               variant="default"
               onClick={runOptimizer}
@@ -908,6 +930,72 @@ export function BacktestView() {
       )}
 
       {optimizeResults && optimizeResults.length > 0 && optimizeMeta && (
+        <>
+        {/* Recommended Strategy highlight */}
+        {(() => {
+          const best = optimizeResults[0];
+          if (!best) return null;
+          const stratLabel = best.strategy === "COVERED_CALL" ? "Covered Call" : best.strategy === "CASH_SECURED_PUT" ? "Cash-Secured Put" : "Wheel";
+          return (
+            <Card className="border-primary/40 bg-gradient-to-br from-primary/10 to-primary/5">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <span className="text-xl">🥇</span>
+                  Recommended Strategy
+                  {optimizeMeta.realDataUsed && (
+                    <Badge variant="profit" className="text-xs">ThetaData</Badge>
+                  )}
+                </CardTitle>
+                <CardDescription>
+                  Best risk-adjusted strategy for {symbol} — ranked by composite score (return + Sharpe + drawdown + win rate).
+                  Full backtest with Trading Plan is running below.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <div className="rounded-lg border bg-background p-3">
+                    <p className="text-xs text-muted-foreground">Strategy</p>
+                    <p className="text-lg font-semibold">{stratLabel}</p>
+                  </div>
+                  <div className="rounded-lg border bg-background p-3">
+                    <p className="text-xs text-muted-foreground">Annualized return</p>
+                    <p className={cn("text-lg font-semibold", best.annualizedReturn >= 0 ? "text-profit" : "text-loss")}>
+                      {formatPercent(best.annualizedReturn)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border bg-background p-3">
+                    <p className="text-xs text-muted-foreground">Sharpe ratio</p>
+                    <p className="text-lg font-semibold">
+                      {best.sharpeRatio != null ? best.sharpeRatio.toFixed(2) : "—"}
+                      <span className="ml-1 text-xs text-muted-foreground">
+                        {best.sharpeRatio != null && best.sharpeRatio >= 2 ? "(excellent)" : best.sharpeRatio != null && best.sharpeRatio >= 1 ? "(good)" : best.sharpeRatio != null && best.sharpeRatio >= 0 ? "(ok)" : ""}
+                      </span>
+                    </p>
+                  </div>
+                  <div className="rounded-lg border bg-background p-3">
+                    <p className="text-xs text-muted-foreground">Max drawdown</p>
+                    <p className="text-lg font-semibold text-loss">{formatPercent(best.maxDrawdown)}</p>
+                  </div>
+                </div>
+                <div className="mt-3 grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                  <div><span className="text-xs text-muted-foreground">DTE: </span><span className="font-medium">{best.dte}</span></div>
+                  <div><span className="text-xs text-muted-foreground">Delta: </span><span className="font-medium">{best.deltaTarget.toFixed(2)}</span></div>
+                  <div><span className="text-xs text-muted-foreground">Buy back: </span><span className="font-medium">{best.buyBackPct > 0 ? `${best.buyBackPct}%` : "Hold to expiry"}</span></div>
+                  <div><span className="text-xs text-muted-foreground">Win rate: </span><span className="font-medium">{formatPercent(best.winRate, 0)}</span></div>
+                  <div><span className="text-xs text-muted-foreground">Cycles: </span><span className="font-medium">{best.totalCycles}</span></div>
+                  <div><span className="text-xs text-muted-foreground">vs B&H: </span><span className={cn("font-medium", best.outperformance >= 0 ? "text-profit" : "text-loss")}>{formatPercent(best.outperformance)}</span></div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {best.neverBelowCost && <Badge variant="secondary" className="text-xs">Cost-basis floor</Badge>}
+                  {best.averageDown && <Badge variant="secondary" className="text-xs">Average down</Badge>}
+                  {best.rollOnAssignment && <Badge variant="secondary" className="text-xs">Roll on assignment</Badge>}
+                  {(best.minCallYieldPct > 0 || best.minPutYieldPct > 0) && <Badge variant="secondary" className="text-xs">Min yield {((best.minCallYieldPct || best.minPutYieldPct) * 100).toFixed(0)}%</Badge>}
+                  {best.realDataCycles > 0 && <Badge variant="profit" className="text-xs">{best.realDataCycles}/{best.totalCycles} real data cycles</Badge>}
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })()}
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
@@ -920,7 +1008,7 @@ export function BacktestView() {
             <CardDescription>
               {optimizeMeta.totalCombinations} combinations tested
               {optimizeMeta.phase1Combinations ? ` (${optimizeMeta.phase1Combinations} coarse + ${optimizeMeta.phase2Combinations ?? 0} fine-tune)` : ""},
-              ranked by annualized return.
+              ranked by composite score (return + Sharpe + drawdown + win rate).
               Buy & hold returned {formatPercent(optimizeMeta.buyHoldReturn)} over the same period.
               Click a row to run the full backtest with those settings.
             </CardDescription>
@@ -999,6 +1087,7 @@ export function BacktestView() {
             </p>
           </CardContent>
         </Card>
+        </>
       )}
 
       {result && (

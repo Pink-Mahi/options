@@ -45,6 +45,7 @@ interface OptimizeResult {
   avgPremiumPerCycle: number;
   realDataCycles: number;
   bsModelCycles: number;
+  compositeScore: number;
 }
 
 // Phase 1 sweep grids
@@ -137,9 +138,30 @@ async function runOne(
       avgPremiumPerCycle: result.avgPremiumPerCycle,
       realDataCycles: result.realDataCycles,
       bsModelCycles: result.bsModelCycles,
+      compositeScore: 0, // computed after all results collected
     };
   } catch {
     return null;
+  }
+}
+
+function computeCompositeScore(r: OptimizeResult, riskTolerance: number): number {
+  // riskTolerance: 0 = conservative, 1 = balanced, 2 = aggressive
+  // Higher risk tolerance weights return more, lower weights Sharpe + drawdown more
+  const annReturn = r.annualizedReturn;
+  const sharpe = r.sharpeRatio ?? 0;
+  const dd = Math.abs(r.maxDrawdown);
+  const winRate = r.winRate;
+
+  if (riskTolerance <= 0.5) {
+    // Conservative: prioritize Sharpe and low drawdown
+    return annReturn * 0.3 + sharpe * 15 + (1 - dd) * 20 + winRate * 10;
+  } else if (riskTolerance <= 1.5) {
+    // Balanced: equal-ish weighting
+    return annReturn * 0.5 + sharpe * 10 + (1 - dd) * 10 + winRate * 5;
+  } else {
+    // Aggressive: prioritize return
+    return annReturn * 0.8 + sharpe * 5 + (1 - dd) * 5 + winRate * 2;
   }
 }
 
@@ -147,7 +169,7 @@ export async function POST(req: Request) {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: { symbol?: string; range?: string; contracts?: number; dteMin?: number; dteMax?: number; strategy?: string };
+  let body: { symbol?: string; range?: string; contracts?: number; dteMin?: number; dteMax?: number; strategy?: string; riskTolerance?: number };
   try {
     body = await req.json();
   } catch {
@@ -163,6 +185,7 @@ export async function POST(req: Request) {
     : "3y";
 
   const contracts = Number(body.contracts) > 0 ? Number(body.contracts) : 1;
+  const riskTolerance = Math.max(0, Math.min(2, Number(body.riskTolerance ?? 1)));
 
   // Optional DTE range filter (e.g. 45-90, <=60, >=45)
   const dteMin = Number(body.dteMin) > 0 ? Number(body.dteMin) : 0;
@@ -314,8 +337,11 @@ export async function POST(req: Request) {
           }
         }
 
-        // Sort phase 1 by annualized return, take top 10
-        phase1Results.sort((a, b) => b.annualizedReturn - a.annualizedReturn);
+        // Sort phase 1 by composite score, take top 10
+        for (const r of phase1Results) {
+          r.compositeScore = computeCompositeScore(r, riskTolerance);
+        }
+        phase1Results.sort((a, b) => b.compositeScore - a.compositeScore);
         const phase1Top = phase1Results.slice(0, 10);
 
         // ---- Phase 2: Fine-tune top 10 with boolean toggles + min yield ----
@@ -363,8 +389,11 @@ export async function POST(req: Request) {
           }
         }
 
-        // Sort all results, take top 20
-        allResults.sort((a, b) => b.annualizedReturn - a.annualizedReturn);
+        // Sort all results by composite score, take top 20
+        for (const r of allResults) {
+          r.compositeScore = computeCompositeScore(r, riskTolerance);
+        }
+        allResults.sort((a, b) => b.compositeScore - a.compositeScore);
         const top20 = allResults.slice(0, 20);
 
         send({
