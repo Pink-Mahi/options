@@ -234,13 +234,12 @@ export async function POST(req: Request) {
             }
           }
           const allDates = Array.from(dateSet).sort();
-          // Cap the number of dates fetched. Default 40 keeps free-tier prefetch
-          // (~2.1s/req) under ~85s. Raise THETADATA_OPTIMIZE_MAX_DATES on paid
-          // tiers (or lower THETADATA_REQ_DELAY_MS).
-          const maxDates = Number(process.env.THETADATA_OPTIMIZE_MAX_DATES ?? 40);
+          // Fetch ALL cycle dates — no cap. With a local Theta Terminal
+          // and a low delay (200ms), even 200 dates completes in ~40s.
+          // THETADATA_OPTIMIZE_MAX_DATES can still be set to enforce a cap.
+          const maxDates = Number(process.env.THETADATA_OPTIMIZE_MAX_DATES ?? 0);
           let datesToFetch = allDates;
-          if (allDates.length > maxDates) {
-            // Sample evenly across the period so every DTE gets partial coverage
+          if (maxDates > 0 && allDates.length > maxDates) {
             const stride = allDates.length / maxDates;
             datesToFetch = Array.from({ length: maxDates }, (_, k) =>
               allDates[Math.floor(k * stride)]!,

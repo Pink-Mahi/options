@@ -67,8 +67,9 @@ export async function POST(req: Request) {
         const p = hist.data.points[i];
         if (p) cycleDates.push(p.date);
       }
-      // Limit to 60 cycles to avoid excessive API calls (free tier: 30 req/min)
-      const datesToFetch = cycleDates.slice(0, 60);
+      // Fetch ALL cycle dates — no cap. With a local Theta Terminal
+      // and 200ms delay, even 120 dates completes in ~24s.
+      const datesToFetch = cycleDates;
       if (datesToFetch.length > 0) {
         console.log(`[backtest] Pre-fetching ${datesToFetch.length} EOD chains from ThetaData...`);
         try {
@@ -93,7 +94,7 @@ export async function POST(req: Request) {
     let touchFetchCount = 0;
     if (realData) {
       const rowsCache = new Map<string, Map<string, ThetaDataEODQuote>>();
-      const reqDelayMs = Number(process.env.THETADATA_REQ_DELAY_MS ?? 2100);
+      const reqDelayMs = Number(process.env.THETADATA_REQ_DELAY_MS ?? 200);
       getDailyRows = async (c) => {
         const key = `${c.optionType}|${c.strike}|${c.expiration}`;
         const cached = rowsCache.get(key);

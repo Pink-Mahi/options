@@ -289,9 +289,9 @@ export async function prefetchEODChains(
 ): Promise<Map<string, ThetaDataEODQuote[]>> {
   const cache = new Map<string, ThetaDataEODQuote[]>();
   const base = getBaseUrl();
-  // Free tier: 30 req/min = ~2s between requests. Paid tiers can lower this
-  // via THETADATA_REQ_DELAY_MS (e.g. 200 for Pro).
-  const delayMs = Number(process.env.THETADATA_REQ_DELAY_MS ?? 2100);
+  // Local Theta Terminal: default 200ms (fast, no rate limit).
+  // Cloud API free tier: set THETADATA_REQ_DELAY_MS=2100 (30 req/min).
+  const delayMs = Number(process.env.THETADATA_REQ_DELAY_MS ?? 200);
   // Abort the whole prefetch after this many consecutive failures — the
   // terminal is down, and grinding through every date just wastes minutes.
   let consecutiveFailures = 0;
