@@ -1095,6 +1095,151 @@ export function BacktestView() {
             />
           </div>
 
+          {/* Trading Plan */}
+          <Card className="border-primary/30 bg-primary/5">
+            <CardHeader>
+              <CardTitle className="text-base">Trading plan recipe</CardTitle>
+              <CardDescription>
+                Follow these rules to replicate the backtested strategy. Print this and keep it next to your trading screen.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4 text-sm">
+              {/* Strategy overview */}
+              <div className="rounded-md border bg-background p-3">
+                <p className="font-semibold mb-1">
+                  {STRATEGY_LABELS[strategy as StrategyOption] ?? strategy} on {symbol}
+                </p>
+                <p className="text-muted-foreground">
+                  {strategy === "WHEEL" && "Sell cash-secured puts → get assigned → sell covered calls → get called away → repeat."}
+                  {strategy === "COVERED_CALL" && "Hold 100 shares per contract. Sell covered calls against them. If called away, buy shares and repeat."}
+                  {strategy === "CASH_SECURED_PUT" && "Sell cash-secured puts. If assigned, hold shares or sell them, then sell more puts."}
+                </p>
+              </div>
+
+              {/* Step-by-step rules */}
+              <div className="space-y-3">
+                <p className="font-semibold">Step-by-step rules</p>
+
+                {/* Step 1: Strike selection */}
+                <div className="rounded-md border bg-background p-3 space-y-1">
+                  <p className="font-medium text-primary">1. Strike selection — Δ{deltaTarget.toFixed(2)} target</p>
+                  <p className="text-muted-foreground">
+                    Each cycle, find the strike with delta closest to <strong>{deltaTarget.toFixed(2)}</strong>.
+                    For puts: the strike below the stock price where the put delta ≈ {deltaTarget.toFixed(2)}.
+                    For calls: the strike above the stock price (or above your cost basis if floor is on) where the call delta ≈ {deltaTarget.toFixed(2)}.
+                  </p>
+                  {neverBelowCost && strategy !== "CASH_SECURED_PUT" && (
+                    <p className="text-xs text-warning">
+                      ⚠ Cost-basis floor is ON: never sell a call below your share cost basis, even if the delta target suggests a lower strike.
+                    </p>
+                  )}
+                </div>
+
+                {/* Step 2: Expiration selection */}
+                <div className="rounded-md border bg-background p-3 space-y-1">
+                  <p className="font-medium text-primary">2. Expiration — {dteTarget} DTE target</p>
+                  <p className="text-muted-foreground">
+                    Sell the expiration closest to <strong>{dteTarget} days</strong> out (~{Math.round(dteTarget / 7)} weeks / ~{Math.round(dteTarget / 30)} months).
+                    The backtester picked the nearest available expiration to this target each cycle.
+                  </p>
+                </div>
+
+                {/* Step 3: Entry rules */}
+                <div className="rounded-md border bg-background p-3 space-y-1">
+                  <p className="font-medium text-primary">3. Entry — when to sell</p>
+                  <p className="text-muted-foreground">
+                    {minYieldPct > 0 || minPutYieldPct > 0
+                      ? <>Only sell if the premium is at least <strong>{(minYieldPct || minPutYieldPct).toFixed(1)}%</strong> of the stock price (e.g., on a $300 stock, collect at least ${((minYieldPct || minPutYieldPct) / 100 * 300).toFixed(2)}/share). Place a GTC limit order at this price — if it doesn't fill within the cycle, skip that cycle.</>
+                      : <>Sell at the <strong>bid</strong> price (marketable limit at the current bid). The backtester uses {fillAssumption === "bid" ? "bid" : "mid"} as the fill assumption.</>
+                    }
+                  </p>
+                  <p className="text-muted-foreground">
+                    Sell <strong>{contracts}</strong> contract(s) per cycle{strategy === "WHEEL" ? " (puts when no shares, 1 call per 100 shares held)" : "."}
+                  </p>
+                </div>
+
+                {/* Step 4: Exit / buyback */}
+                <div className="rounded-md border bg-background p-3 space-y-1">
+                  <p className="font-medium text-primary">4. Exit — buyback rule</p>
+                  {buyBackPct > 0 ? (
+                    <>
+                      <p className="text-muted-foreground">
+                        Place a GTC buyback order at <strong>{(buyBackPct * 100).toFixed(0)}%</strong> of the sale price.
+                        This means: sell for $5.00 → buy back at $5.00 × {(1 - buyBackPct).toFixed(2)} = <strong>${(5 * (1 - buyBackPct)).toFixed(2)}</strong>.
+                        You keep <strong>{(buyBackPct * 100).toFixed(0)}%</strong> of the premium.
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        The backtester checked daily for this trigger. In real trading, place a GTC order and let it rest.
+                        {(buyBackPct <= 0.25) && " At this low threshold, buybacks may trigger within days — be prepared for frequent cycling."}
+                        {(buyBackPct >= 0.5 && buyBackPct < 0.8) && " This is a moderate threshold — buybacks typically take weeks."}
+                        {(buyBackPct >= 0.8) && " This is a high threshold — you'll hold most positions to expiration."}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-muted-foreground">
+                      No buyback rule — hold to expiration. The option either expires worthless (keep full premium) or gets assigned/called away.
+                    </p>
+                  )}
+                </div>
+
+                {/* Step 5: Assignment / called away */}
+                <div className="rounded-md border bg-background p-3 space-y-1">
+                  <p className="font-medium text-primary">5. On assignment / called away</p>
+                  {strategy === "WHEEL" ? (
+                    <p className="text-muted-foreground">
+                      {rollOnAssignment
+                        ? "Roll ITM calls: buy back at intrinsic value, keep shares, sell the next call. Never let shares be called away."
+                        : "If a put is assigned → you buy 100 shares per contract at the strike price. Switch to selling covered calls. If a call is called away → shares are sold at the strike. Switch back to selling puts."
+                      }
+                    </p>
+                  ) : strategy === "COVERED_CALL" ? (
+                    <p className="text-muted-foreground">
+                      If called away: shares are sold at the strike. Buy back 100 shares per contract and sell the next call.
+                      {rollOnAssignment && " Roll instead: buy back the call at intrinsic and keep shares."}
+                    </p>
+                  ) : (
+                    <p className="text-muted-foreground">
+                      If assigned: you buy 100 shares per contract at the strike. Either hold them or sell and continue selling puts.
+                    </p>
+                  )}
+                </div>
+
+                {/* Step 6: Average down */}
+                {averageDown && (
+                  <div className="rounded-md border bg-background p-3 space-y-1">
+                    <p className="font-medium text-primary">6. Average down with premium</p>
+                    <p className="text-muted-foreground">
+                      When the stock is below your cost basis, use accumulated premium to buy additional 100-share lots.
+                      Each lot lowers your average cost basis, which lowers the floor for future call sales.
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Backtest validation */}
+              <div className="rounded-md border bg-muted/40 p-3 space-y-1.5">
+                <p className="font-semibold">What the backtest showed</p>
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+                  <span className="text-muted-foreground">Cycles:</span><span>{result.totalCycles} over {result.startDate} → {result.endDate}</span>
+                  <span className="text-muted-foreground">Avg days/cycle:</span><span>{Math.round(result.avgDaysPerCycle)}</span>
+                  <span className="text-muted-foreground">Total premium:</span><span>{formatCurrency(result.totalPremiumIncome, 0)}</span>
+                  <span className="text-muted-foreground">Strategy return:</span><span className={result.strategyReturn >= 0 ? "text-profit" : "text-loss"}>{formatPercent(result.strategyReturn)}</span>
+                  <span className="text-muted-foreground">Buy & hold:</span><span>{formatPercent(result.buyHoldReturn)}</span>
+                  <span className="text-muted-foreground">Real data:</span><span>{result.dataSourceSummary?.realDataCycles ?? 0}/{result.dataSourceSummary?.totalCycles ?? result.totalCycles} cycles</span>
+                  <span className="text-muted-foreground">Max drawdown:</span><span className="text-loss">{formatPercent(result.maxDrawdown)}</span>
+                  <span className="text-muted-foreground">Sharpe:</span><span>{result.sharpeRatio != null ? result.sharpeRatio.toFixed(2) : "—"}</span>
+                </div>
+                {result.avgDaysPerCycle < 10 && buyBackPct > 0 && (
+                  <p className="text-xs text-warning mt-2">
+                    ⚠ Avg cycle is only {Math.round(result.avgDaysPerCycle)} days with {(buyBackPct * 100).toFixed(0)}% buyback.
+                    This means buybacks trigger very quickly. In practice, you'd need to monitor positions daily and place new orders the same day.
+                    Consider a higher buyback % for less active management.
+                  </p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
           {monthlyData.length > 1 && (
             <Card>
               <CardHeader>
