@@ -222,6 +222,7 @@ export async function POST(req: Request) {
         // Fetching every trading day ensures every cycle open has real data,
         // regardless of how buyback timing shifts cycle start dates.
         let realData: Map<string, ThetaDataEODQuote[]> | undefined;
+        let fetchedDatesCount = 0;
         if (isThetaDataConfigured()) {
           // Fetch EVERY trading day from index 30 onward. The backtester
           // advances idx to effCloseIdx (the buyback or expiry date), so
@@ -239,6 +240,7 @@ export async function POST(req: Request) {
             );
           }
           if (datesToFetch.length > 0) {
+            fetchedDatesCount = datesToFetch.length;
             console.log(`[optimize] Pre-fetching ${datesToFetch.length} EOD chains from ThetaData (${allDates.length} cycle dates in grid)...`);
             send({
               type: "progress",
@@ -376,7 +378,7 @@ export async function POST(req: Request) {
           buyHoldReturn: top20[0]?.buyHoldReturn ?? 0,
           realDataUsed: (top20[0]?.realDataCycles ?? 0) > 0,
           modelCaveat: realData && (top20[0]?.realDataCycles ?? 0) > 0
-            ? `Option premiums use real historical bid/ask from ThetaData where available. The optimizer sampled ${Number(process.env.THETADATA_OPTIMIZE_MAX_DATES ?? 40)} cycle dates across the sweep grid, so each combination blends real quotes with Black-Scholes fallback (see the Real column). Rankings compare strategies under the same data, not absolute predictions. Run a single backtest for full per-cycle real data.`
+            ? `Option premiums use real historical bid/ask from ThetaData where available. The optimizer fetched ${fetchedDatesCount} trading days across the sweep grid, so each combination blends real quotes with Black-Scholes fallback (see the Real column). Rankings compare strategies under the same data, not absolute predictions. Run a single backtest for full per-cycle real data.`
             : realData
               ? "ThetaData terminal is configured but no real data was returned for the sampled dates. All combinations use Black-Scholes model. Check that the terminal is running and the range is within your subscription tier."
               : "Option premiums are modeled with Black-Scholes using trailing 30-day realized volatility, not historical option quotes. Rankings are comparative within the same model, not absolute predictions. Past performance does not guarantee future results.",
