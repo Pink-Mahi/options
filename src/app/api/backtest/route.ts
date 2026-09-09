@@ -62,14 +62,10 @@ export async function POST(req: Request) {
     // for any dates not in the map.
     let realData: Map<string, ThetaDataEODQuote[]> | undefined;
     if (isThetaDataConfigured()) {
-      const cycleDates: string[] = [];
-      for (let i = 30; i < hist.data.points.length; i += tradingDaysPerCycle) {
-        const p = hist.data.points[i];
-        if (p) cycleDates.push(p.date);
-      }
-      // Fetch ALL cycle dates — no cap. With a local Theta Terminal
-      // and 200ms delay, even 120 dates completes in ~24s.
-      const datesToFetch = cycleDates;
+      // Fetch EVERY trading day from index 30 onward — the backtester's
+      // actual cycle starts depend on buyback timing (idx = effCloseIdx),
+      // not a fixed step, so we need all dates to guarantee coverage.
+      const datesToFetch = hist.data.points.slice(30).map((p) => p.date);
       if (datesToFetch.length > 0) {
         console.log(`[backtest] Pre-fetching ${datesToFetch.length} EOD chains from ThetaData...`);
         try {

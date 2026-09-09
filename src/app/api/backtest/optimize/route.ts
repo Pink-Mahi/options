@@ -219,24 +219,17 @@ export async function POST(req: Request) {
         const spyPoints = spyHist?.data.points;
 
         // ---- Pre-fetch real ThetaData EOD chains (shared across ALL combinations) ----
-        // Each DTE in the sweep grid produces its own cycle dates (every
-        // round(dte * 252/365) trading days from index 30, matching the
-        // backtester's walk). Compute the union of those dates, then sample down
-        // to a cap so the prefetch stays within the request budget.
+        // Fetching every trading day ensures every cycle open has real data,
+        // regardless of how buyback timing shifts cycle start dates.
         let realData: Map<string, ThetaDataEODQuote[]> | undefined;
         if (isThetaDataConfigured()) {
-          const dateSet = new Set<string>();
-          for (const dte of sweepDtes) {
-            const step = Math.max(1, Math.round(dte * 252 / 365));
-            for (let i = 30; i < points.length; i += step) {
-              const p = points[i];
-              if (p) dateSet.add(p.date);
-            }
-          }
-          const allDates = Array.from(dateSet).sort();
-          // Fetch ALL cycle dates — no cap. With a local Theta Terminal
-          // and a low delay (200ms), even 200 dates completes in ~40s.
-          // THETADATA_OPTIMIZE_MAX_DATES can still be set to enforce a cap.
+          // Fetch EVERY trading day from index 30 onward. The backtester
+          // advances idx to effCloseIdx (the buyback or expiry date), so
+          // actual cycle starts don't align with a fixed step grid — they
+          // depend on how quickly the option decays to the buyback target.
+          // Only by fetching all dates can we guarantee every cycle open
+          // has real data. With 200ms delay, ~750 dates takes ~2.5 min.
+          const allDates = points.slice(30).map((p) => p.date);
           const maxDates = Number(process.env.THETADATA_OPTIMIZE_MAX_DATES ?? 0);
           let datesToFetch = allDates;
           if (maxDates > 0 && allDates.length > maxDates) {
