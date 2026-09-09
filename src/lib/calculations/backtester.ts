@@ -616,10 +616,11 @@ export async function runBacktest(
       }
     }
 
-    // Calls are sold one contract per 100 shares held; puts stay at the
-    // configured contract count.
+    // Calls are sold one contract per 100 shares held, but never more than
+    // the configured contract count. Average-down adds shares to lower the
+    // cost basis — it should NOT inflate the position size exponentially.
     const activeContracts =
-      optionType === "CALL" ? Math.max(1, Math.floor(sharesHeld / 100)) : config.contracts;
+      optionType === "CALL" ? Math.max(1, Math.min(config.contracts, Math.floor(sharesHeld / 100))) : config.contracts;
 
     // Cost-basis floor: never sell a call below what we paid for the shares.
     const minCallStrike =
@@ -828,7 +829,10 @@ export async function runBacktest(
     let effCloseSpot = closeSpot;
 
     if (filled && buyBackPct > 0 && buyBackPct < 1) {
-      const trigger = fillPrice * (1 - buyBackPct);
+      // buyBackPct is the fraction of the sale price to buy back at.
+      // e.g. 0.20 = buy back when option is worth 20% of sale price (80% profit).
+      // 0.50 = buy back at 50% of sale price (50% profit).
+      const trigger = fillPrice * buyBackPct;
       let dailyRows: Map<string, ThetaDataEODQuote> | undefined;
       if (config.getDailyRows && dataSource === "REAL" && realExpiration) {
         try {

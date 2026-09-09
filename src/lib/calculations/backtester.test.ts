@@ -298,7 +298,7 @@ describe("runBacktest - reinvest premium to average down", async () => {
     expect(result.endingCostBasis!).toBeLessThan(100);
   });
 
-  it("sells more call contracts after buying extra lots", async () => {
+  it("average-down lowers cost basis without inflating contract count", async () => {
     const prices = generatePrices(100, 1500, 0.04, -0.0008);
     const result = await runBacktest(prices, {
       ...baseConfig,
@@ -307,8 +307,12 @@ describe("runBacktest - reinvest premium to average down", async () => {
     });
 
     expect(result.averagedDownLots).toBeGreaterThan(0);
+    // Contracts should stay at the configured count, not grow exponentially
     const maxContracts = Math.max(...result.trades.map((t) => t.contracts));
-    expect(maxContracts).toBeGreaterThan(1);
+    expect(maxContracts).toBe(baseConfig.contracts);
+    // Extra shares should lower the cost basis
+    expect(result.endingCostBasis!).toBeLessThan(100);
+    expect(result.endingShares).toBeGreaterThan(baseConfig.contracts * 100);
   });
 
   it("never buys when the stock stays above cost basis", async () => {
