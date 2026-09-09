@@ -16,7 +16,7 @@
 
 import type { HistoricalPricePoint } from "@/lib/types";
 import { blackScholes } from "./pricing-model";
-import { simpleAnnualizedRate } from "./core";
+import { compoundAnnualizedRate } from "./core";
 import type { MarketContext } from "./market-context";
 import { analyzeMarketContext } from "./market-context";
 import type { ThetaDataEODQuote } from "@/features/market-data/thetadata";
@@ -1015,8 +1015,8 @@ export async function runBacktest(
   const strategyReturn = (strategyEquity - config.startingCapital) / config.startingCapital;
   const buyHoldReturn = (lastPrice.adjustedClose - buyHoldStartPrice) / buyHoldStartPrice;
 
-  const strategyAnnualized = simpleAnnualizedRate(strategyReturn, years * 365);
-  const buyHoldAnnualized = simpleAnnualizedRate(buyHoldReturn, years * 365);
+  const strategyAnnualized = compoundAnnualizedRate(strategyReturn, years * 365);
+  const buyHoldAnnualized = compoundAnnualizedRate(buyHoldReturn, years * 365);
 
   const strategyEquityValues = equityCurve.map((e) => e.strategyEquity);
   const dd = maxDrawdown(strategyEquityValues.length > 0 ? strategyEquityValues : [config.startingCapital]);
