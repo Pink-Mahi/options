@@ -145,23 +145,53 @@ async function runOne(
   }
 }
 
-function computeCompositeScore(r: OptimizeResult, riskTolerance: number): number {
+type OptimizeGoal = "cash_flow" | "balanced" | "long_term_gains";
+
+function computeCompositeScore(r: OptimizeResult, riskTolerance: number, goal: OptimizeGoal): number {
   // riskTolerance: 0 = conservative, 1 = balanced, 2 = aggressive
-  // Higher risk tolerance weights return more, lower weights Sharpe + drawdown more
   const annReturn = r.annualizedReturn;
+  const totalReturn = r.strategyReturn;
   const sharpe = r.sharpeRatio ?? 0;
   const dd = Math.abs(r.maxDrawdown);
   const winRate = r.winRate;
+  const assignments = r.assignmentCount;
+  const cycles = r.totalCycles;
+  const premium = r.totalPremiumIncome;
 
-  if (riskTolerance <= 0.5) {
-    // Conservative: prioritize Sharpe and low drawdown
-    return annReturn * 0.3 + sharpe * 15 + (1 - dd) * 20 + winRate * 10;
-  } else if (riskTolerance <= 1.5) {
-    // Balanced: equal-ish weighting
-    return annReturn * 0.5 + sharpe * 10 + (1 - dd) * 10 + winRate * 5;
+  // Goal-based weighting adjustments
+  if (goal === "cash_flow") {
+    // Maximize frequent premium income. Weight annualized return,
+    // premium volume, and cycle count. Penalize drawdown.
+    const base = annReturn * 0.4 + premium / 10000 + cycles * 0.5 + winRate * 10;
+    if (riskTolerance <= 0.5) {
+      return base + sharpe * 15 + (1 - dd) * 20;
+    } else if (riskTolerance <= 1.5) {
+      return base + sharpe * 8 + (1 - dd) * 8;
+    } else {
+      return base + sharpe * 3 + (1 - dd) * 3;
+    }
+  } else if (goal === "long_term_gains") {
+    // Maximize total return including stock appreciation. Weight
+    // totalReturn heavily, penalize assignments (which cap upside),
+    // reward lower delta (already reflected in fewer assignments).
+    const base = totalReturn * 0.6 + annReturn * 0.2 + winRate * 5;
+    const assignPenalty = assignments * 2;
+    if (riskTolerance <= 0.5) {
+      return base + sharpe * 12 + (1 - dd) * 15 - assignPenalty;
+    } else if (riskTolerance <= 1.5) {
+      return base + sharpe * 6 + (1 - dd) * 8 - assignPenalty;
+    } else {
+      return base + sharpe * 2 + (1 - dd) * 3 - assignPenalty * 0.5;
+    }
   } else {
-    // Aggressive: prioritize return
-    return annReturn * 0.8 + sharpe * 5 + (1 - dd) * 5 + winRate * 2;
+    // Balanced: current behavior
+    if (riskTolerance <= 0.5) {
+      return annReturn * 0.3 + sharpe * 15 + (1 - dd) * 20 + winRate * 10;
+    } else if (riskTolerance <= 1.5) {
+      return annReturn * 0.5 + sharpe * 10 + (1 - dd) * 10 + winRate * 5;
+    } else {
+      return annReturn * 0.8 + sharpe * 5 + (1 - dd) * 5 + winRate * 2;
+    }
   }
 }
 
@@ -169,7 +199,7 @@ export async function POST(req: Request) {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: { symbol?: string; range?: string; contracts?: number; dteMin?: number; dteMax?: number; strategy?: string; riskTolerance?: number };
+  let body: { symbol?: string; range?: string; contracts?: number; dteMin?: number; dteMax?: number; strategy?: string; riskTolerance?: number; goal?: string };
   try {
     body = await req.json();
   } catch {
@@ -186,6 +216,7 @@ export async function POST(req: Request) {
 
   const contracts = Number(body.contracts) > 0 ? Number(body.contracts) : 1;
   const riskTolerance = Math.max(0, Math.min(2, Number(body.riskTolerance ?? 1)));
+  const goal: OptimizeGoal = body.goal === "cash_flow" || body.goal === "long_term_gains" ? body.goal : "balanced";
 
   // Optional DTE range filter (e.g. 45-90, <=60, >=45)
   const dteMin = Number(body.dteMin) > 0 ? Number(body.dteMin) : 0;
@@ -339,7 +370,7 @@ export async function POST(req: Request) {
 
         // Sort phase 1 by composite score, take top 10
         for (const r of phase1Results) {
-          r.compositeScore = computeCompositeScore(r, riskTolerance);
+          r.compositeScore = computeCompositeScore(r, riskTolerance, goal);
         }
         phase1Results.sort((a, b) => b.compositeScore - a.compositeScore);
         const phase1Top = phase1Results.slice(0, 10);
@@ -391,7 +422,7 @@ export async function POST(req: Request) {
 
         // Sort all results by composite score, take top 20
         for (const r of allResults) {
-          r.compositeScore = computeCompositeScore(r, riskTolerance);
+          r.compositeScore = computeCompositeScore(r, riskTolerance, goal);
         }
         allResults.sort((a, b) => b.compositeScore - a.compositeScore);
         const top20 = allResults.slice(0, 20);

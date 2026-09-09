@@ -125,6 +125,7 @@ export function BacktestView() {
   } | null>(null);
   const [optimizeElapsed, setOptimizeElapsed] = useState(0);
   const [riskTolerance, setRiskTolerance] = useState(1);
+  const [optimizeGoal, setOptimizeGoal] = useState<string>("balanced");
 
   useEffect(() => {
     fetch("/api/backtest-presets", { cache: "no-store" })
@@ -214,6 +215,7 @@ export function BacktestView() {
           dteMax: optDteMax > 0 ? optDteMax : undefined,
           strategy: optStrategy !== "ALL" ? optStrategy : undefined,
           riskTolerance,
+          goal: optimizeGoal,
         }),
         cache: "no-store",
       });
@@ -663,6 +665,20 @@ export function BacktestView() {
               />
             </div>
             <div className="flex items-center gap-1.5">
+              <Label className="text-xs text-muted-foreground whitespace-nowrap" title="Cash Flow = maximize frequent premium income. Long-Term Gains = maximize total return including stock appreciation. Balanced = both.">
+                Goal:
+              </Label>
+              <select
+                value={optimizeGoal}
+                onChange={(e) => setOptimizeGoal(e.target.value)}
+                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+              >
+                <option value="balanced">Balanced</option>
+                <option value="cash_flow">Cash Flow</option>
+                <option value="long_term_gains">Long-Term Gains</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-1.5">
               <Label className="text-xs text-muted-foreground whitespace-nowrap" title="Conservative = prioritize Sharpe & low drawdown. Aggressive = prioritize return.">
                 Risk:
               </Label>
@@ -947,7 +963,7 @@ export function BacktestView() {
                   )}
                 </CardTitle>
                 <CardDescription>
-                  Best risk-adjusted strategy for {symbol} — ranked by composite score (return + Sharpe + drawdown + win rate).
+                  Best risk-adjusted strategy for {symbol} — ranked by composite score ({optimizeGoal === "cash_flow" ? "cash flow: premium income + cycle frequency" : optimizeGoal === "long_term_gains" ? "long-term gains: total return + low assignment risk" : "balanced: return + Sharpe + drawdown + win rate"}).
                   Full backtest with Trading Plan is running below.
                 </CardDescription>
               </CardHeader>
@@ -1008,7 +1024,7 @@ export function BacktestView() {
             <CardDescription>
               {optimizeMeta.totalCombinations} combinations tested
               {optimizeMeta.phase1Combinations ? ` (${optimizeMeta.phase1Combinations} coarse + ${optimizeMeta.phase2Combinations ?? 0} fine-tune)` : ""},
-              ranked by composite score (return + Sharpe + drawdown + win rate).
+              ranked by composite score ({optimizeGoal === "cash_flow" ? "cash flow optimized" : optimizeGoal === "long_term_gains" ? "long-term gains optimized" : "balanced"}).
               Buy & hold returned {formatPercent(optimizeMeta.buyHoldReturn)} over the same period.
               Click a row to run the full backtest with those settings.
             </CardDescription>
