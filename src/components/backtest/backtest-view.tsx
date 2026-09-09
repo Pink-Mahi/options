@@ -1087,7 +1087,7 @@ export function BacktestView() {
                 value={formatPercent(result.avgPutPremiumYield, 2)}
               />
             )}
-            <Stat label="Expired worthless" value={formatPercent(result.winRate)} />
+            <Stat label="Win rate" value={formatPercent(result.winRate)} />
             <Stat label="Total premium" value={formatCurrency(result.totalPremiumIncome, 0)} />
             <Stat
               label="Sharpe (per-cycle)"
@@ -1360,7 +1360,8 @@ export function BacktestView() {
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-2 text-sm">
-                <Row label="Expired worthless" value={String(result.expiredWorthlessCount)} />
+                <Row label="Bought back (win)" value={String(result.earlyCloseCount)} />
+                <Row label="Expired worthless (win)" value={String(result.expiredWorthlessCount)} />
                 <Row label="Assigned (put)" value={String(result.assignmentCount)} />
                 <Row label="Called away (call)" value={String(result.calledAwayCount)} />
                 <Row label="Avg premium / cycle" value={formatCurrency(result.avgPremiumPerCycle, 2)} />

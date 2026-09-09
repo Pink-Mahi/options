@@ -1020,7 +1020,7 @@ export async function runBacktest(
 
   const strategyEquityValues = equityCurve.map((e) => e.strategyEquity);
   const dd = maxDrawdown(strategyEquityValues.length > 0 ? strategyEquityValues : [config.startingCapital]);
-  const cyclesPerYear = config.dteTarget > 0 ? 365 / config.dteTarget : 0;
+  const cyclesPerYear = years > 0 ? trades.length / years : 0;
   const sr = sharpeRatio(cycleReturns, cyclesPerYear, config.riskFreeRate);
 
   // Compute market context if benchmark data was provided
@@ -1042,7 +1042,9 @@ export async function runBacktest(
     trades,
     totalPremiumIncome: cashFromPremium,
     totalCycles: trades.length,
-    winRate: trades.length > 0 ? expiredWorthlessCount / trades.length : 0,
+    winRate: trades.length > 0
+      ? (expiredWorthlessCount + earlyCloseCount) / trades.length
+      : 0,
     avgPremiumPerCycle: trades.length > 0 ? cashFromPremium / trades.length : 0,
     avgDaysPerCycle:
       trades.length > 0
