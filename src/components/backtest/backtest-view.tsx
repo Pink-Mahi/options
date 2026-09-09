@@ -1150,7 +1150,7 @@ export function BacktestView() {
                   <p className="font-medium text-primary">3. Entry — when to sell</p>
                   <p className="text-muted-foreground">
                     {minYieldPct > 0 || minPutYieldPct > 0
-                      ? <>Only sell if the premium is at least <strong>{(minYieldPct || minPutYieldPct).toFixed(1)}%</strong> of the stock price (e.g., on a $300 stock, collect at least ${((minYieldPct || minPutYieldPct) / 100 * 300).toFixed(2)}/share). Place a GTC limit order at this price — if it doesn't fill within the cycle, skip that cycle.</>
+                      ? <>Only sell if the premium is at least <strong>{(minYieldPct || minPutYieldPct).toFixed(1)}%</strong> of the stock price (e.g., on a $300 stock, collect at least ${((minYieldPct || minPutYieldPct) / 100 * 300).toFixed(2)}/share). Place a GTC limit order at this price — if it doesn&#39;t fill within the cycle, skip that cycle.</>
                       : <>Sell at the <strong>bid</strong> price (marketable limit at the current bid). The backtester uses {fillAssumption === "bid" ? "bid" : "mid"} as the fill assumption.</>
                     }
                   </p>
@@ -1233,7 +1233,7 @@ export function BacktestView() {
                 {result.avgDaysPerCycle < 10 && buyBackPct > 0 && (
                   <p className="text-xs text-warning mt-2">
                     ⚠ Avg cycle is only {Math.round(result.avgDaysPerCycle)} days with {(buyBackPct * 100).toFixed(0)}% buyback.
-                    This means buybacks trigger very quickly. In practice, you'd need to monitor positions daily and place new orders the same day.
+                    This means buybacks trigger very quickly. In practice, you&#39;d need to monitor positions daily and place new orders the same day.
                     Consider a higher buyback % for less active management.
                   </p>
                 )}
