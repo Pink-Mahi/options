@@ -47,6 +47,7 @@ interface OptimizeResult {
   realDataCycles: number;
   bsModelCycles: number;
   compositeScore: number;
+  avgMonthlyIncome: number;
 }
 
 interface PresetData {
@@ -422,17 +423,19 @@ export function BacktestView() {
   }
 
   const monthlyData = useMemo(() => {
-    if (!result) return [];
-    const map = new Map<string, { month: string; premium: number; pnl: number }>();
-    for (const t of result.trades) {
-      const month = t.openDate.slice(0, 7);
-      const entry = map.get(month) ?? { month, premium: 0, pnl: 0 };
-      entry.premium += t.premiumIncome;
-      entry.pnl += t.cyclePnl;
-      map.set(month, entry);
-    }
-    return Array.from(map.values()).sort((a, b) => a.month.localeCompare(b.month));
+    if (!result?.monthlyCashFlow) return [];
+    return result.monthlyCashFlow.map((m) => ({
+      month: m.month,
+      premium: m.netPremium,
+      gross: m.grossPremium,
+      trades: m.trades,
+    }));
   }, [result]);
+
+  const avgMonthlyIncome = useMemo(() => {
+    if (monthlyData.length === 0) return 0;
+    return monthlyData.reduce((s, m) => s + m.premium, 0) / monthlyData.length;
+  }, [monthlyData]);
 
   const benchmarkMap = useMemo(() => {
     if (!result?.marketContext) return new Map<string, number>();
@@ -999,6 +1002,7 @@ export function BacktestView() {
                   <div><span className="text-xs text-muted-foreground">Buy back: </span><span className="font-medium">{best.buyBackPct > 0 ? `${best.buyBackPct}%` : "Hold to expiry"}</span></div>
                   <div><span className="text-xs text-muted-foreground">Win rate: </span><span className="font-medium">{formatPercent(best.winRate, 0)}</span></div>
                   <div><span className="text-xs text-muted-foreground">Cycles: </span><span className="font-medium">{best.totalCycles}</span></div>
+                  <div><span className="text-xs text-muted-foreground">Mo. income: </span><span className="font-medium text-profit">{formatCurrency(best.avgMonthlyIncome, 0)}</span></div>
                   <div><span className="text-xs text-muted-foreground">vs B&H: </span><span className={cn("font-medium", best.outperformance >= 0 ? "text-profit" : "text-loss")}>{formatPercent(best.outperformance)}</span></div>
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
@@ -1045,6 +1049,7 @@ export function BacktestView() {
                     <TableHead className="text-right">Total Return</TableHead>
                     <TableHead className="text-right">vs B&H</TableHead>
                     <TableHead className="text-right">Premium</TableHead>
+                    <TableHead className="text-right" title="Average net premium income per month">Mo. Income</TableHead>
                     <TableHead className="text-right">Cycles</TableHead>
                     <TableHead className="text-right">Win Rate</TableHead>
                     <TableHead className="text-right">Max DD</TableHead>
@@ -1086,6 +1091,7 @@ export function BacktestView() {
                         {formatPercent(r.outperformance)}
                       </TableCell>
                       <TableCell className="text-right">{formatCurrency(r.totalPremiumIncome, 0)}</TableCell>
+                      <TableCell className="text-right font-medium text-profit">{formatCurrency(r.avgMonthlyIncome, 0)}</TableCell>
                       <TableCell className="text-right">{r.totalCycles}</TableCell>
                       <TableCell className="text-right">{formatPercent(r.winRate, 0)}</TableCell>
                       <TableCell className="text-right text-loss">{formatPercent(r.maxDrawdown)}</TableCell>
@@ -1368,6 +1374,12 @@ export function BacktestView() {
             <Stat label="Win rate" value={formatPercent(result.winRate)} />
             <Stat label="Total premium" value={formatCurrency(result.totalPremiumIncome, 0)} />
             <Stat
+              label="Avg monthly income"
+              value={formatCurrency(avgMonthlyIncome, 0)}
+              tone="profit"
+              hint={`Net premium per month across ${monthlyData.length} months`}
+            />
+            <Stat
               label="Sharpe (per-cycle)"
               value={result.sharpeRatio != null ? result.sharpeRatio.toFixed(2) : "—"}
               hint={result.sharpeRatio != null && result.sharpeRatio >= 2 ? "Excellent risk-adjusted return (>2.0)" : result.sharpeRatio != null && result.sharpeRatio >= 1 ? "Good risk-adjusted return (>1.0)" : result.sharpeRatio != null && result.sharpeRatio >= 0 ? "Positive but below 1.0 — high volatility relative to returns" : "Negative — worse than risk-free rate"}
@@ -1519,11 +1531,13 @@ export function BacktestView() {
             </CardContent>
           </Card>
 
-          {monthlyData.length > 1 && (
+          {monthlyData.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Monthly premium income</CardTitle>
-                <CardDescription>Premium collected and cycle P/L by month.</CardDescription>
+                <CardTitle className="text-base">Monthly cash flow</CardTitle>
+                <CardDescription>
+                  Net premium income by month (when positions closed). Avg: <strong className="text-profit">{formatCurrency(avgMonthlyIncome, 0)}/mo</strong> across {monthlyData.length} months.
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="h-64 w-full">
@@ -1534,10 +1548,32 @@ export function BacktestView() {
                       <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `$${Number(v).toFixed(0)}`} />
                       <Tooltip formatter={(v) => formatCurrency(Number(v), 0)} contentStyle={{ fontSize: 12 }} />
                       <Legend wrapperStyle={{ fontSize: 12 }} />
-                      <Bar dataKey="premium" name="Premium" fill="#2563eb" radius={[4, 4, 0, 0]} />
-                      <Bar dataKey="pnl" name="Cycle P/L" fill="#16a34a" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="premium" name="Net premium" fill="#16a34a" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="gross" name="Gross premium" fill="#2563eb" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
+                </div>
+                <div className="mt-3 overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Month</TableHead>
+                        <TableHead className="text-right">Net premium</TableHead>
+                        <TableHead className="text-right">Gross premium</TableHead>
+                        <TableHead className="text-right">Trades closed</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {monthlyData.map((m) => (
+                        <TableRow key={m.month}>
+                          <TableCell className="font-medium">{m.month}</TableCell>
+                          <TableCell className="text-right text-profit font-medium">{formatCurrency(m.premium, 0)}</TableCell>
+                          <TableCell className="text-right text-muted-foreground">{formatCurrency(m.gross, 0)}</TableCell>
+                          <TableCell className="text-right">{m.trades}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
                 </div>
               </CardContent>
             </Card>

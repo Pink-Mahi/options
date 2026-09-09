@@ -46,6 +46,7 @@ interface OptimizeResult {
   realDataCycles: number;
   bsModelCycles: number;
   compositeScore: number;
+  avgMonthlyIncome: number;
 }
 
 // Phase 1 sweep grids
@@ -139,6 +140,9 @@ async function runOne(
       realDataCycles: result.realDataCycles,
       bsModelCycles: result.bsModelCycles,
       compositeScore: 0, // computed after all results collected
+      avgMonthlyIncome: result.monthlyCashFlow.length > 0
+        ? result.monthlyCashFlow.reduce((s, m) => s + m.netPremium, 0) / result.monthlyCashFlow.length
+        : 0,
     };
   } catch {
     return null;

@@ -211,12 +211,32 @@ export interface BacktestResult {
   touchEntryCount: number;
   /** Cycles that had daily contract rows available for GTC touch simulation */
   touchCycles: number;
+  /** Monthly cash flow breakdown: net premium income grouped by close month */
+  monthlyCashFlow: { month: string; netPremium: number; grossPremium: number; trades: number }[];
   warnings: string[];
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Group trades by close month and sum net premium income. */
+function computeMonthlyCashFlow(trades: BacktestTrade[]): { month: string; netPremium: number; grossPremium: number; trades: number }[] {
+  const map = new Map<string, { netPremium: number; grossPremium: number; trades: number }>();
+  for (const t of trades) {
+    if (t.outcome === "NO_FILL") continue;
+    const month = t.closeDate.slice(0, 7); // YYYY-MM
+    const entry = map.get(month) ?? { netPremium: 0, grossPremium: 0, trades: 0 };
+    const buybackCost = t.exitPremium != null ? t.exitPremium * t.contracts * 100 : 0;
+    entry.netPremium += t.premiumIncome - buybackCost;
+    entry.grossPremium += t.premiumIncome;
+    entry.trades += 1;
+    map.set(month, entry);
+  }
+  return Array.from(map.entries())
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([month, v]) => ({ month, ...v }));
+}
 
 /** Rolling realized volatility over N trading days. */
 function realizedVol(prices: HistoricalPricePoint[], endIdx: number, window: number): number {
@@ -535,6 +555,7 @@ export async function runBacktest(
       touchExitCount: 0,
       touchEntryCount: 0,
       touchCycles: 0,
+      monthlyCashFlow: [],
       warnings: ["No price data available."],
     };
   }
@@ -1082,6 +1103,7 @@ export async function runBacktest(
     touchExitCount,
     touchEntryCount,
     touchCycles,
+    monthlyCashFlow: computeMonthlyCashFlow(trades),
     warnings,
   };
 }
