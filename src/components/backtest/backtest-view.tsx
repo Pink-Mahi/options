@@ -294,10 +294,19 @@ export function BacktestView() {
         modelCaveat: payload.modelCaveat ?? "",
         realDataUsed: payload.realDataUsed ?? false,
       });
-      // Auto-apply the #1 result so the Trading Plan appears immediately
+      // Auto-apply the #1 result's settings so the form is ready, but don't
+      // auto-run the backtest — let the user review and click Run Backtest.
       const best = top.length > 0 ? top[0] : null;
       if (best) {
-        applyOptimizedResult(best);
+        setStrategy(best.strategy as StrategyOption);
+        setDteTarget(best.dte);
+        setBuyBackPct(best.buyBackPct);
+        setDeltaTarget(best.deltaTarget);
+        setMinYieldPct(best.minCallYieldPct > 0 ? best.minCallYieldPct * 100 : 0);
+        setMinPutYieldPct(best.minPutYieldPct > 0 ? best.minPutYieldPct * 100 : 0);
+        setNeverBelowCost(best.neverBelowCost);
+        setAverageDown(best.averageDown);
+        setRollOnAssignment(best.rollOnAssignment);
       }
     } catch (e) {
       setError((e as Error).message);
@@ -1001,7 +1010,7 @@ export function BacktestView() {
                 </CardTitle>
                 <CardDescription>
                   Best risk-adjusted strategy for {symbol} — ranked by composite score ({optimizeGoal === "cash_flow" ? "cash flow: premium income + cycle frequency" : optimizeGoal === "long_term_gains" ? "long-term gains: total return + low assignment risk" : "balanced: return + Sharpe + drawdown + win rate"}).
-                  Full backtest with Trading Plan is running below.
+                  Full backtest with Trading Plan is ready to run below.
                 </CardDescription>
               </CardHeader>
               <CardContent>
