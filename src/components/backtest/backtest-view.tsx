@@ -127,6 +127,8 @@ export function BacktestView() {
   const [optimizeElapsed, setOptimizeElapsed] = useState(0);
   const [riskTolerance, setRiskTolerance] = useState(1);
   const [optimizeGoal, setOptimizeGoal] = useState<string>("balanced");
+  const [optSharesHeld, setOptSharesHeld] = useState<number>(0);
+  const [optStartingCapital, setOptStartingCapital] = useState<number>(0);
 
   useEffect(() => {
     fetch("/api/backtest-presets", { cache: "no-store" })
@@ -217,6 +219,8 @@ export function BacktestView() {
           strategy: optStrategy !== "ALL" ? optStrategy : undefined,
           riskTolerance,
           goal: optimizeGoal,
+          sharesHeld: optSharesHeld > 0 ? optSharesHeld : undefined,
+          startingCapital: optStartingCapital > 0 ? optStartingCapital : undefined,
         }),
         cache: "no-store",
       });
@@ -665,6 +669,34 @@ export function BacktestView() {
                 value={optDteMax > 0 ? optDteMax : ""}
                 onChange={(e) => setOptDteMax(Math.max(0, Number(e.target.value) || 0))}
                 className="w-16 h-8 text-xs"
+              />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Label className="text-xs text-muted-foreground whitespace-nowrap" title="Number of shares you currently hold (for covered calls / wheel). 0 = CSP only.">
+                Shares:
+              </Label>
+              <Input
+                type="number"
+                min={0}
+                step={100}
+                placeholder="0"
+                value={optSharesHeld > 0 ? optSharesHeld : ""}
+                onChange={(e) => setOptSharesHeld(Math.max(0, Number(e.target.value) || 0))}
+                className="w-20 h-8 text-xs"
+              />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <Label className="text-xs text-muted-foreground whitespace-nowrap" title="Starting capital in $. 0 = auto (spot × contracts × 100).">
+                Capital:
+              </Label>
+              <Input
+                type="number"
+                min={0}
+                step={1000}
+                placeholder="Auto"
+                value={optStartingCapital > 0 ? optStartingCapital : ""}
+                onChange={(e) => setOptStartingCapital(Math.max(0, Number(e.target.value) || 0))}
+                className="w-24 h-8 text-xs"
               />
             </div>
             <div className="flex items-center gap-1.5">

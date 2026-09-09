@@ -203,7 +203,7 @@ export async function POST(req: Request) {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: { symbol?: string; range?: string; contracts?: number; dteMin?: number; dteMax?: number; strategy?: string; riskTolerance?: number; goal?: string };
+  let body: { symbol?: string; range?: string; contracts?: number; dteMin?: number; dteMax?: number; strategy?: string; riskTolerance?: number; goal?: string; sharesHeld?: number; startingCapital?: number };
   try {
     body = await req.json();
   } catch {
@@ -271,7 +271,9 @@ export async function POST(req: Request) {
         ]);
 
         const spot = quote.data.price;
-        const startingCapital = Math.max(spot * contracts * 100, 1);
+        const userCapital = Number(body.startingCapital) > 0 ? Number(body.startingCapital) : 0;
+        const startingCapital = userCapital > 0 ? userCapital : Math.max(spot * contracts * 100, 1);
+        const userShares = Number(body.sharesHeld) > 0 ? Number(body.sharesHeld) : 0;
         const strikeInterval = spot >= 200 ? 5 : spot >= 50 ? 2.5 : 1;
         const points = hist.data.points;
         const spyPoints = spyHist?.data.points;
@@ -341,7 +343,7 @@ export async function POST(req: Request) {
         let phase1Done = 0;
 
         for (const strategy of sweepStrategies) {
-          const shares = strategy === "CASH_SECURED_PUT" ? 0 : contracts * 100;
+          const shares = strategy === "CASH_SECURED_PUT" ? 0 : (userShares > 0 ? userShares : contracts * 100);
           for (const delta of DELTAS) {
             for (const dte of sweepDtes) {
               for (const buyBack of BUYBACKS) {
@@ -385,7 +387,7 @@ export async function POST(req: Request) {
         let phase2Done = 0;
 
         for (const base of phase1Top) {
-          const shares = base.strategy === "CASH_SECURED_PUT" ? 0 : contracts * 100;
+          const shares = base.strategy === "CASH_SECURED_PUT" ? 0 : (userShares > 0 ? userShares : contracts * 100);
           for (const minYield of MIN_YIELDS) {
             for (const bools of BOOLEANS) {
               // Skip if this is the same as the base config (already in results)
