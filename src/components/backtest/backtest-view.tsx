@@ -1254,15 +1254,15 @@ export function BacktestView() {
                   {buyBackPct > 0 ? (
                     <>
                       <p className="text-muted-foreground">
-                        Place a GTC buyback order at <strong>{(buyBackPct * 100).toFixed(0)}%</strong> of the sale price.
-                        This means: sell for $5.00 → buy back at $5.00 × {(1 - buyBackPct).toFixed(2)} = <strong>${(5 * (1 - buyBackPct)).toFixed(2)}</strong>.
-                        You keep <strong>{(buyBackPct * 100).toFixed(0)}%</strong> of the premium.
+                        Place a GTC buyback order at <strong>{buyBackPct.toFixed(0)}%</strong> of the sale price.
+                        This means: sell for $5.00 → buy back at $5.00 × {(1 - buyBackPct / 100).toFixed(2)} = <strong>${(5 * (1 - buyBackPct / 100)).toFixed(2)}</strong>.
+                        You keep <strong>{buyBackPct.toFixed(0)}%</strong> of the premium.
                       </p>
                       <p className="text-xs text-muted-foreground">
                         The backtester checked daily for this trigger. In real trading, place a GTC order and let it rest.
-                        {(buyBackPct <= 0.25) && " At this low threshold, buybacks may trigger within days — be prepared for frequent cycling."}
-                        {(buyBackPct >= 0.5 && buyBackPct < 0.8) && " This is a moderate threshold — buybacks typically take weeks."}
-                        {(buyBackPct >= 0.8) && " This is a high threshold — you'll hold most positions to expiration."}
+                        {(buyBackPct <= 25) && " At this low threshold, buybacks may trigger within days — be prepared for frequent cycling."}
+                        {(buyBackPct >= 50 && buyBackPct < 80) && " This is a moderate threshold — buybacks typically take weeks."}
+                        {(buyBackPct >= 80) && " This is a high threshold — you'll hold most positions to expiration."}
                       </p>
                     </>
                   ) : (
@@ -1321,7 +1321,7 @@ export function BacktestView() {
                 </div>
                 {result.avgDaysPerCycle < 10 && buyBackPct > 0 && (
                   <p className="text-xs text-warning mt-2">
-                    ⚠ Avg cycle is only {Math.round(result.avgDaysPerCycle)} days with {(buyBackPct * 100).toFixed(0)}% buyback.
+                    ⚠ Avg cycle is only {Math.round(result.avgDaysPerCycle)} days with {buyBackPct.toFixed(0)}% buyback.
                     This means buybacks trigger very quickly. In practice, you&#39;d need to monitor positions daily and place new orders the same day.
                     Consider a higher buyback % for less active management.
                   </p>
