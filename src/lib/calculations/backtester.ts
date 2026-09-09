@@ -596,24 +596,34 @@ export async function runBacktest(
       shareCostBasis = spot;
     }
 
-    // --- Reinvest premium to average down ---------------------------------
-    // When the stock trades below our cost basis, spend accumulated premium on
-    // 100-share lots. Each lot lowers the weighted-average basis, which lowers
-    // the floor for future call sales and adds another sellable contract.
+    // --- Average down via CSP (sell put to acquire shares at lower strike) ---
+    // When enabled and stock is below cost basis, sell a cash-secured put at
+    // the configured delta. If assigned at cycle close, buy shares at the put
+    // strike (below current spot). If expired worthless, keep the premium.
+    // Only one average-down put per cycle, sized to 1 contract (100 shares).
+    let avgDownPutStrike = 0;
+    let avgDownPutPremium = 0;
+    let avgDownPutActive = false;
     if (
       config.averageDownWithPremium &&
       sharesHeld > 0 &&
       shareCostBasis != null &&
-      spot < shareCostBasis
+      spot < shareCostBasis &&
+      premiumCash >= spot * 100 // need collateral for 100 shares
     ) {
-      while (premiumCash >= spot * 100) {
-        shareCostBasis =
-          (shareCostBasis * sharesHeld + spot * 100) / (sharesHeld + 100);
-        sharesHeld += 100;
-        premiumCash -= spot * 100;
-        reinvestedPremium += spot * 100;
-        averagedDownLots++;
-      }
+      const avgDelta = 0.20; // target 20-delta put for averaging down
+      const res = findStrikeByDelta(
+        spot, iv, config.dteTarget, config.riskFreeRate,
+        "PUT", avgDelta, config.strikeInterval,
+        undefined, config.dividendYield,
+        config.ivSkewEnabled, config.termStructureEnabled,
+      );
+      avgDownPutStrike = res.strike;
+      avgDownPutPremium = res.premium;
+      avgDownPutActive = true;
+      const avgDownIncome = avgDownPutPremium * 100; // 1 contract
+      cashFromPremium += avgDownIncome;
+      premiumCash += avgDownIncome;
     }
 
     // Calls are sold one contract per 100 shares held, but never more than
@@ -979,6 +989,31 @@ export async function runBacktest(
         outcome = "EXPIRED_WORTHLESS";
         expiredWorthlessCount++;
         cyclePnl = premiumIncome;
+      }
+    }
+
+    // --- Resolve average-down CSP put at cycle close ---------------------
+    if (avgDownPutActive) {
+      const avgDownIncome = avgDownPutPremium * 100;
+      if (effCloseSpot < avgDownPutStrike) {
+        // Assigned — buy 100 shares at the put strike
+        const buyCost = avgDownPutStrike * 100;
+        if (shareCostBasis != null) {
+          shareCostBasis = (shareCostBasis * sharesHeld + avgDownPutStrike * 100) / (sharesHeld + 100);
+        } else {
+          shareCostBasis = avgDownPutStrike;
+        }
+        sharesHeld += 100;
+        premiumCash -= buyCost;
+        reinvestedPremium += buyCost;
+        averagedDownLots++;
+        // CSP put P/L: premium + (strike - spot) * 100 (assignment loss)
+        // but the share value is mark-to-market in the equity via stock P/L
+        // in the main cycle. The put premium was already added to cashFromPremium.
+        cyclePnl += avgDownIncome - (avgDownPutStrike - effCloseSpot) * 100;
+      } else {
+        // Expired worthless — keep premium, no shares acquired
+        cyclePnl += avgDownIncome;
       }
     }
 

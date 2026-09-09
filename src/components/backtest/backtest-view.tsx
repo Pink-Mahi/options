@@ -856,10 +856,11 @@ export function BacktestView() {
               wait for a better offer.
             </p>
             <p>
-              <strong className="text-foreground">Reinvest premium to average down:</strong> when the stock
-              drops below your cost basis, accumulated premium buys extra 100-share lots. Each lot lowers your
-              average cost basis — so your strike floor drops too, and each extra 100 shares means one more
-              call contract you can sell next cycle.
+              <strong className="text-foreground">Average down via CSP:</strong> when the stock
+              drops below your cost basis, a 20-delta cash-secured put is sold alongside the main cycle.
+              If assigned at expiration, shares are acquired at the put strike (below current spot), lowering
+              your average cost basis. If expired worthless, the premium is kept. This is more realistic than
+              buying shares directly — you get paid to wait for a better entry.
             </p>
             <p>
               <strong className="text-foreground">Fill price:</strong> <em>Bid</em> assumes you sell 5% below
@@ -913,10 +914,11 @@ export function BacktestView() {
               className="mt-0.5 h-4 w-4 rounded border-input"
             />
             <span>
-              <strong>Reinvest premium to average down.</strong>{" "}
+              <strong>Average down via CSP.</strong>{" "}
               <span className="text-muted-foreground">
-                When the stock is below your cost basis, spend collected premium on 100-share lots — lowering
-                your floor and increasing the number of calls you can sell.
+                When the stock is below your cost basis, sell a 20-delta cash-secured put to potentially acquire
+                100 shares at a lower strike. If assigned, your cost basis drops. If expired worthless, you keep
+                the premium.
               </span>
             </span>
           </label>
@@ -1039,7 +1041,7 @@ export function BacktestView() {
                 </div>
                 <div className="mt-3 flex flex-wrap gap-2">
                   {best.neverBelowCost && <Badge variant="secondary" className="text-xs">Cost-basis floor</Badge>}
-                  {best.averageDown && <Badge variant="secondary" className="text-xs">Average down</Badge>}
+                  {best.averageDown && <Badge variant="secondary" className="text-xs">Avg down (CSP)</Badge>}
                   {best.rollOnAssignment && <Badge variant="secondary" className="text-xs">Roll on assignment</Badge>}
                   {(best.minCallYieldPct > 0 || best.minPutYieldPct > 0) && <Badge variant="secondary" className="text-xs">Min yield {((best.minCallYieldPct || best.minPutYieldPct) * 100).toFixed(0)}%</Badge>}
                   {best.realDataCycles > 0 && <Badge variant="profit" className="text-xs">{best.realDataCycles}/{best.totalCycles} real data cycles</Badge>}
@@ -1530,10 +1532,11 @@ export function BacktestView() {
                 {/* Step 6: Average down */}
                 {averageDown && (
                   <div className="rounded-md border bg-background p-3 space-y-1">
-                    <p className="font-medium text-primary">6. Average down with premium</p>
+                    <p className="font-medium text-primary">6. Average down via CSP</p>
                     <p className="text-muted-foreground">
-                      When the stock is below your cost basis, use accumulated premium to buy additional 100-share lots.
-                      Each lot lowers your average cost basis, which lowers the floor for future call sales.
+                      When the stock is below your cost basis, a 20-delta cash-secured put is sold alongside the main cycle.
+                      If assigned at expiration, 100 shares are acquired at the put strike (below current spot), lowering
+                      your average cost basis. If expired worthless, the premium is kept.
                     </p>
                   </div>
                 )}
