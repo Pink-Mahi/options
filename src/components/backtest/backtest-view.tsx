@@ -944,7 +944,7 @@ export function BacktestView() {
                     <TableHead className="text-right">Cycles</TableHead>
                     <TableHead className="text-right">Win Rate</TableHead>
                     <TableHead className="text-right">Max DD</TableHead>
-                    <TableHead className="text-right">Sharpe</TableHead>
+                    <TableHead className="text-right" title="Risk-adjusted return. >1.0 good, >2.0 excellent, <0 worse than T-bills">Sharpe</TableHead>
                     <TableHead className="text-right">Real</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -1092,6 +1092,7 @@ export function BacktestView() {
             <Stat
               label="Sharpe (per-cycle)"
               value={result.sharpeRatio != null ? result.sharpeRatio.toFixed(2) : "—"}
+              hint={result.sharpeRatio != null && result.sharpeRatio >= 2 ? "Excellent risk-adjusted return (>2.0)" : result.sharpeRatio != null && result.sharpeRatio >= 1 ? "Good risk-adjusted return (>1.0)" : result.sharpeRatio != null && result.sharpeRatio >= 0 ? "Positive but below 1.0 — high volatility relative to returns" : "Negative — worse than risk-free rate"}
             />
           </div>
 
@@ -1280,7 +1281,7 @@ export function BacktestView() {
                       <TableHead className="text-right">Premium</TableHead>
                       <TableHead className="text-right">Cycles</TableHead>
                       <TableHead className="text-right">Max DD</TableHead>
-                      <TableHead className="text-right">Sharpe</TableHead>
+                      <TableHead className="text-right" title="Risk-adjusted return. >1.0 good, >2.0 excellent, <0 worse than T-bills">Sharpe</TableHead>
                       <TableHead className="text-right">Win rate</TableHead>
                     </TableRow>
                   </TableHeader>
@@ -1544,24 +1545,28 @@ function Stat({
   label,
   value,
   tone,
+  hint,
 }: {
   label: string;
   value: string;
   tone?: "profit" | "loss";
+  hint?: string;
 }) {
   return (
     <Card>
       <CardContent className="pt-6">
-        <p className="text-xs text-muted-foreground">{label}</p>
+        <p className="text-xs text-muted-foreground" title={hint}>{label}</p>
         <p
           className={cn(
             "mt-1 text-xl font-semibold",
             tone === "profit" && "text-profit",
             tone === "loss" && "text-loss",
           )}
+          title={hint}
         >
           {value}
         </p>
+        {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
       </CardContent>
     </Card>
   );
