@@ -770,19 +770,27 @@ export async function fetchIntradayCandles(
     const batch = pendingSave;
     pendingSave = [];
     try {
+      const validBatch = batch.filter((c) => {
+        const d = new Date(c.timestamp);
+        return !isNaN(d.getTime());
+      });
+      if (validBatch.length === 0) return;
       await prisma.intradayPrice.createMany({
-        data: batch.map((c) => ({
-          symbol: sym,
-          date: new Date(c.timestamp.slice(0, 10) + "T00:00:00"),
-          timestamp: new Date(c.timestamp),
-          interval,
-          open: c.open,
-          high: c.high,
-          low: c.low,
-          close: c.close,
-          volume: BigInt(Math.max(0, Math.floor(c.volume)) || 0),
-          session: c.session,
-        })),
+        data: validBatch.map((c) => {
+          const dateStr = c.timestamp.slice(0, 10);
+          return {
+            symbol: sym,
+            date: new Date(dateStr + "T00:00:00"),
+            timestamp: new Date(c.timestamp),
+            interval,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+            volume: BigInt(Math.max(0, Math.floor(c.volume)) || 0),
+            session: c.session,
+          };
+        }),
         skipDuplicates: true,
       });
       totalSaved += batch.length;
@@ -871,11 +879,14 @@ export async function fetchIntradayCandles(
   interface ThetaDataStockEODEntry {
     timestamp?: string;
     date?: string;
+    last_trade?: string;
+    created?: string;
     open: number;
     high: number;
     low: number;
     close: number;
     volume?: number;
+    [key: string]: unknown;
   }
 
   function parseEODResponse(text: string, sym: string, monthStart: string, monthEnd: string): IntradayCandle[] {
@@ -889,11 +900,27 @@ export async function fetchIntradayCandles(
     const entries = json.response ?? json.data;
     if (!entries || !Array.isArray(entries)) return [];
 
+    if (entries.length > 0) {
+      console.log(`[thetadata] Stock EOD first entry keys for ${sym}:`, Object.keys(entries[0]!));
+      console.log(`[thetadata] Stock EOD first entry sample:`, JSON.stringify(entries[0]).slice(0, 500));
+    }
+
     const candles: IntradayCandle[] = [];
     for (const entry of entries) {
-      // Stock EOD may return either "timestamp" (ISO) or "date" (YYYY-MM-DD)
-      const rawTs = entry.timestamp ?? entry.date ?? "";
-      const ts = rawTs.length > 10 ? rawTs : rawTs + "T16:00:00.000Z";
+      // Try multiple possible date field names
+      const rawTs = entry.timestamp ?? entry.date ?? entry.last_trade ?? entry.created ?? "";
+      let ts: string;
+      if (rawTs.length > 10) {
+        // Already ISO format
+        ts = rawTs;
+      } else if (rawTs.length === 10) {
+        // YYYY-MM-DD format — convert to ISO
+        ts = rawTs + "T16:00:00.000Z";
+      } else {
+        // No date field found — skip this entry
+        console.warn(`[thetadata] Stock EOD entry missing date field for ${sym}:`, Object.keys(entry));
+        continue;
+      }
       candles.push({
         timestamp: ts,
         open: entry.open,
