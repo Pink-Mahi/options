@@ -85,19 +85,27 @@ export async function POST(req: Request) {
           if (datesToFetch.length > 0) {
             send({
               type: "progress",
-              message: `Pre-fetching ${datesToFetch.length} EOD option chains from ThetaData…`,
+              message: `Loading EOD option chains (${datesToFetch.length} dates) — checking DB cache first…`,
               stage: "prefetch",
               done: 0,
               total: datesToFetch.length,
             });
-            console.log(`[backtest] Pre-fetching ${datesToFetch.length} EOD chains from ThetaData...`);
+            console.log(`[backtest] Pre-fetching ${datesToFetch.length} EOD chains (DB cache + ThetaData)...`);
             try {
-              realData = await prefetchEODChains(symbol, datesToFetch);
+              realData = await prefetchEODChains(symbol, datesToFetch, (doneNum, totalNum) => {
+                send({
+                  type: "progress",
+                  message: `Loading EOD option chains — ${doneNum}/${totalNum} dates processed…`,
+                  stage: "prefetch",
+                  done: doneNum,
+                  total: totalNum,
+                });
+              });
               const withData = Array.from(realData.values()).filter((q) => q.length > 0).length;
-              console.log(`[backtest] ThetaData prefetch complete: ${withData}/${datesToFetch.length} dates returned real quotes`);
+              console.log(`[backtest] EOD chains ready: ${withData}/${datesToFetch.length} dates with real quotes`);
               send({
                 type: "progress",
-                message: `ThetaData prefetch complete: ${withData}/${datesToFetch.length} dates with real quotes`,
+                message: `EOD chains ready: ${withData}/${datesToFetch.length} dates with real quotes`,
                 stage: "prefetch",
                 done: datesToFetch.length,
                 total: datesToFetch.length,

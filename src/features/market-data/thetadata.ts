@@ -18,6 +18,7 @@
 
 import "server-only";
 import { impliedVolatility, blackScholes } from "@/lib/calculations/pricing-model";
+import { prisma } from "@/lib/database/prisma";
 
 export interface ThetaDataEODQuote {
   date: string; // YYYY-MM-DD
@@ -288,17 +289,53 @@ export async function prefetchEODChains(
   onProgress?: (done: number, total: number) => void,
 ): Promise<Map<string, ThetaDataEODQuote[]>> {
   const cache = new Map<string, ThetaDataEODQuote[]>();
-  const base = getBaseUrl();
-  // Local Theta Terminal: default 200ms (fast, no rate limit).
-  // Cloud API free tier: set THETADATA_REQ_DELAY_MS=2100 (30 req/min).
-  const delayMs = Number(process.env.THETADATA_REQ_DELAY_MS ?? 200);
-  // Abort the whole prefetch after this many consecutive failures — the
-  // terminal is down, and grinding through every date just wastes minutes.
-  let consecutiveFailures = 0;
-  let done = 0;
-  let loggedEmptySample = false;
+  const sym = symbol.toUpperCase();
 
-  for (const date of dates) {
+  // --- Phase 1: Load cached chains from the database ---
+  // Each date's chain is stored as a MarketDataCache row with kind "eod_chain".
+  // The payload is the array of ThetaDataEODQuote objects for that date.
+  // We only fetch dates that are NOT already in the DB.
+  const cacheKeys = dates.map((d) => `eod_chain:${sym}:${d}`);
+  let cachedRows: { cacheKey: string; payload: unknown }[] = [];
+  try {
+    cachedRows = await prisma.marketDataCache.findMany({
+      where: { cacheKey: { in: cacheKeys } },
+      select: { cacheKey: true, payload: true },
+    });
+  } catch (err) {
+    console.warn("[thetadata] DB cache read failed, will fetch all dates:", err);
+  }
+
+  const cachedMap = new Map<string, ThetaDataEODQuote[]>();
+  for (const row of cachedRows) {
+    const date = row.cacheKey.split(":").slice(2).join(":");
+    const quotes = row.payload as ThetaDataEODQuote[];
+    if (Array.isArray(quotes)) {
+      cachedMap.set(date, quotes);
+      cache.set(date, quotes);
+    }
+  }
+
+  const datesToFetch = dates.filter((d) => !cachedMap.has(d));
+  const cachedCount = dates.length - datesToFetch.length;
+  if (cachedCount > 0) {
+    console.log(`[thetadata] DB cache hit: ${cachedCount}/${dates.length} dates already cached for ${sym}`);
+  }
+
+  if (datesToFetch.length === 0) {
+    console.log(`[thetadata] All ${dates.length} dates served from DB cache — no ThetaData requests needed.`);
+    return cache;
+  }
+
+  // --- Phase 2: Fetch missing dates from ThetaData ---
+  const base = getBaseUrl();
+  const delayMs = Number(process.env.THETADATA_REQ_DELAY_MS ?? 200);
+  let consecutiveFailures = 0;
+  let done = cachedCount;
+  let loggedEmptySample = false;
+  const fetchedRows: { cacheKey: string; payload: ThetaDataEODQuote[] }[] = [];
+
+  for (const date of datesToFetch) {
     if (consecutiveFailures >= 3) {
       console.warn(
         `[thetadata] Giving up on prefetch after ${consecutiveFailures} consecutive failures — terminal at ${base} is not reachable.`,
@@ -309,7 +346,7 @@ export async function prefetchEODChains(
     const dateParam = formatDate(date);
 
     const params = new URLSearchParams({
-      symbol: symbol.toUpperCase(),
+      symbol: sym,
       start_date: dateParam,
       end_date: dateParam,
       expiration: "*",
@@ -327,28 +364,25 @@ export async function prefetchEODChains(
     try {
       const res = await fetch(url, { headers, cache: "no-store" });
       if (!res.ok) {
-        console.warn(`ThetaData fetch failed for ${symbol} on ${date}: ${res.status}`);
+        console.warn(`ThetaData fetch failed for ${sym} on ${date}: ${res.status}`);
         cache.set(date, []);
         consecutiveFailures++;
         continue;
       }
       consecutiveFailures = 0;
 
-      // Capture the raw body so failures are diagnosable — the terminal
-      // returns HTTP 200 with an error/empty payload when unauthenticated
-      // or unentitled, and we need to see what it actually said.
       const text = await res.text();
       let json: ThetaDataEODResponse;
       try {
         json = JSON.parse(text) as ThetaDataEODResponse;
       } catch {
-        console.warn(`ThetaData returned non-JSON for ${symbol} on ${date} (HTTP ${res.status}): ${text.slice(0, 300)}`);
+        console.warn(`ThetaData returned non-JSON for ${sym} on ${date} (HTTP ${res.status}): ${text.slice(0, 300)}`);
         cache.set(date, []);
         continue;
       }
       const entries = json.response ?? json.data;
       if (!entries || !Array.isArray(entries)) {
-        console.warn(`ThetaData unexpected response shape for ${symbol} on ${date}: ${text.slice(0, 300)}`);
+        console.warn(`ThetaData unexpected response shape for ${sym} on ${date}: ${text.slice(0, 300)}`);
         cache.set(date, []);
         continue;
       }
@@ -382,12 +416,16 @@ export async function prefetchEODChains(
       if (quotes.length === 0 && !loggedEmptySample) {
         loggedEmptySample = true;
         console.warn(
-          `ThetaData returned zero quotes for ${symbol} on ${date}. Raw response (first 300 chars): ${text.slice(0, 300)}`,
+          `ThetaData returned zero quotes for ${sym} on ${date}. Raw response (first 300 chars): ${text.slice(0, 300)}`,
         );
       }
       cache.set(date, quotes);
+      // Queue for DB persistence (only save non-empty to avoid caching failures)
+      if (quotes.length > 0) {
+        fetchedRows.push({ cacheKey: `eod_chain:${sym}:${date}`, payload: quotes });
+      }
     } catch (err) {
-      console.warn(`ThetaData fetch error for ${symbol} on ${date}: ${(err as Error).message}`);
+      console.warn(`ThetaData fetch error for ${sym} on ${date}: ${(err as Error).message}`);
       cache.set(date, []);
       consecutiveFailures++;
     }
@@ -398,11 +436,38 @@ export async function prefetchEODChains(
     }
 
     done++;
-    // Progress feedback — a 120-date prefetch can take minutes with no
-    // other output, which looks like a hang in the container logs.
     onProgress?.(done, dates.length);
     if (done % 20 === 0 || done === dates.length) {
-      console.log(`[thetadata] Prefetch progress: ${done}/${dates.length} chains fetched...`);
+      console.log(`[thetadata] Prefetch progress: ${done}/${dates.length} (${cachedCount} from cache, ${done - cachedCount} fetched)...`);
+    }
+  }
+
+  // --- Phase 3: Persist newly fetched chains to the DB ---
+  if (fetchedRows.length > 0) {
+    try {
+      // Use upsert to handle any race conditions with concurrent backtests
+      await Promise.all(
+        fetchedRows.map((row) =>
+          prisma.marketDataCache.upsert({
+            where: { cacheKey: row.cacheKey },
+            create: {
+              cacheKey: row.cacheKey,
+              kind: "eod_chain",
+              symbol: sym,
+              payload: row.payload as unknown as import("@prisma/client").Prisma.InputJsonValue,
+              expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000), // 1 year TTL
+            },
+            update: {
+              payload: row.payload as unknown as import("@prisma/client").Prisma.InputJsonValue,
+              expiresAt: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000),
+            },
+          }),
+        ),
+      );
+      console.log(`[thetadata] Saved ${fetchedRows.length} new EOD chains to DB cache for ${sym}`);
+    } catch (err) {
+      console.warn(`[thetadata] DB cache write failed for ${sym}:`, err);
+      // Non-fatal — the backtest still works with the in-memory cache
     }
   }
 
