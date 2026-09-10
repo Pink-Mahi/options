@@ -97,9 +97,35 @@ export function PriceActionTab({ data }: { data: StockData }) {
           if (evt.type === "progress") {
             setProgress(evt.message ?? "Working…");
           } else if (evt.type === "result") {
-            setCandles(evt.candles ?? []);
-            setProgress(`${evt.candleCount ?? 0} candles loaded`);
-            if (evt.warning) setWarning(evt.warning);
+            const fetchedCandles = evt.candles ?? [];
+            if (fetchedCandles.length === 0) {
+              // ThetaData returned no data — fall back to built-in historical prices
+              const histPoints = data.historical.points.filter(
+                (p) => p.date >= startDate && p.date <= endDate,
+              );
+              if (histPoints.length > 0) {
+                setCandles(
+                  histPoints.map((p) => ({
+                    timestamp: p.date + "T16:00:00.000Z",
+                    open: p.open,
+                    high: p.high,
+                    low: p.low,
+                    close: p.close,
+                    volume: p.volume ?? 0,
+                    session: "regular" as const,
+                  })),
+                );
+                setProgress(`${histPoints.length} daily candles loaded from historical data`);
+                setWarning("ThetaData stock endpoints returned 403 (free tier limit). Showing daily historical prices from the market data provider instead.");
+              } else {
+                setCandles([]);
+                setProgress("0 candles loaded");
+              }
+            } else {
+              setCandles(fetchedCandles);
+              setProgress(`${evt.candleCount ?? 0} candles loaded`);
+              if (evt.warning) setWarning(evt.warning);
+            }
           } else if (evt.type === "error") {
             throw new Error(evt.error ?? "Fetch failed");
           }
