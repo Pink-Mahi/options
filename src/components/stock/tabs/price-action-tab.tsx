@@ -47,6 +47,7 @@ export function PriceActionTab({ data }: { data: StockData }) {
   const [error, setError] = useState<string | null>(null);
 
   const [warning, setWarning] = useState<string | null>(null);
+  const [rangePreset, setRangePreset] = useState<string>("MAX");
 
   // Option overlay state
   const [selectedExpiration, setSelectedExpiration] = useState("");
@@ -174,7 +175,7 @@ export function PriceActionTab({ data }: { data: StockData }) {
   }
 
   // Build daily OHLC from intraday candles for the candlestick chart
-  const dailyCandles: CandleData[] = useMemo(() => {
+  const allDailyCandles: CandleData[] = useMemo(() => {
     if (candles.length === 0) return [];
     const byDay = new Map<string, IntradayCandle[]>();
     for (const c of candles) {
@@ -196,6 +197,15 @@ export function PriceActionTab({ data }: { data: StockData }) {
       })
       .sort((a, b) => a.date.localeCompare(b.date));
   }, [candles]);
+
+  // Apply zoom range preset to daily candles
+  const dailyCandles: CandleData[] = useMemo(() => {
+    if (allDailyCandles.length === 0) return [];
+    if (rangePreset === "MAX") return allDailyCandles;
+    const days = parseInt(rangePreset);
+    if (isNaN(days)) return allDailyCandles;
+    return allDailyCandles.slice(-days);
+  }, [allDailyCandles, rangePreset]);
 
   // Option overlay data for the candlestick chart
   const optionOverlay = useMemo(() => {
@@ -526,6 +536,25 @@ export function PriceActionTab({ data }: { data: StockData }) {
                   overlayData={optionOverlay}
                   overlayLabel={`${selectedRight} $${selectedStrike} ${selectedExpiration}`}
                 />
+
+                {/* Zoom Range Presets */}
+                <div className="mt-3 flex items-center gap-1.5">
+                  <span className="text-xs text-muted-foreground mr-1">Range:</span>
+                  {["1", "5", "14", "30", "60", "90", "180", "MAX"].map((preset) => (
+                    <Button
+                      key={preset}
+                      size="sm"
+                      variant={rangePreset === preset ? "default" : "outline"}
+                      className="h-7 px-2.5 text-xs"
+                      onClick={() => setRangePreset(preset)}
+                    >
+                      {preset === "MAX" ? "MAX" : `${preset}D`}
+                    </Button>
+                  ))}
+                  <span className="ml-auto text-xs text-muted-foreground">
+                    Showing {dailyCandles.length} of {allDailyCandles.length} candles
+                  </span>
+                </div>
               </CardContent>
             </Card>
           )}
