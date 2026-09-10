@@ -298,10 +298,16 @@ export async function prefetchEODChains(
   const cacheKeys = dates.map((d) => `eod_chain:${sym}:${d}`);
   let cachedRows: { cacheKey: string; payload: unknown }[] = [];
   try {
-    cachedRows = await prisma.marketDataCache.findMany({
-      where: { cacheKey: { in: cacheKeys } },
-      select: { cacheKey: true, payload: true },
-    });
+    // Batch the findMany to avoid sending 700+ keys in a single query
+    const BATCH_SIZE = 100;
+    for (let i = 0; i < cacheKeys.length; i += BATCH_SIZE) {
+      const batch = cacheKeys.slice(i, i + BATCH_SIZE);
+      const rows = await prisma.marketDataCache.findMany({
+        where: { cacheKey: { in: batch } },
+        select: { cacheKey: true, payload: true },
+      });
+      cachedRows.push(...rows);
+    }
   } catch (err) {
     console.warn("[thetadata] DB cache read failed, will fetch all dates:", err);
   }
@@ -343,20 +349,28 @@ export async function prefetchEODChains(
     if (pendingSave.length === 0) return;
     const batch = pendingSave;
     pendingSave = [];
-    try {
-      await prisma.marketDataCache.createMany({
-        data: batch.map((row) => ({
-          cacheKey: row.cacheKey,
-          kind: "eod_chain",
-          symbol: sym,
-          payload: row.payload as unknown as import("@prisma/client").Prisma.InputJsonValue,
-          expiresAt: farFuture,
-        })),
-        skipDuplicates: true,
-      });
-      totalSaved += batch.length;
-    } catch (err) {
-      console.warn(`[thetadata] DB cache write failed for ${sym} (batch of ${batch.length}):`, err);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await prisma.marketDataCache.createMany({
+          data: batch.map((row) => ({
+            cacheKey: row.cacheKey,
+            kind: "eod_chain",
+            symbol: sym,
+            payload: row.payload as unknown as import("@prisma/client").Prisma.InputJsonValue,
+            expiresAt: farFuture,
+          })),
+          skipDuplicates: true,
+        });
+        totalSaved += batch.length;
+        return;
+      } catch (err) {
+        if (attempt < 2) {
+          console.warn(`[thetadata] DB cache write attempt ${attempt + 1} failed, retrying...`);
+          await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+        } else {
+          console.warn(`[thetadata] DB cache write failed for ${sym} (batch of ${batch.length}) after 3 attempts:`, err);
+        }
+      }
     }
   }
 
