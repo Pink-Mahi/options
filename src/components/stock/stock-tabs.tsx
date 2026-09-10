@@ -16,6 +16,7 @@ import { TechnicalAnalysisTab } from "@/components/stock/tabs/technical-analysis
 import { NewsSentimentTab } from "@/components/stock/tabs/news-sentiment-tab";
 import { EarningsTab } from "@/components/stock/tabs/earnings-tab";
 import { PeersTab } from "@/components/stock/tabs/peers-tab";
+import { PriceActionTab } from "@/components/stock/tabs/price-action-tab";
 import type { StockData } from "@/features/options/stock-data";
 import type { Portfolio } from "@/lib/types";
 
@@ -33,6 +34,7 @@ export function StockTabs({ data, portfolio }: { data: StockData; portfolio: Por
         <TabsTrigger value="option-chain">Option Chain</TabsTrigger>
         <TabsTrigger value="compare-contracts">Compare Contracts</TabsTrigger>
         <TabsTrigger value="historical">Historical</TabsTrigger>
+        <TabsTrigger value="price-action">Price Action</TabsTrigger>
         <TabsTrigger value="technical">Technical Analysis</TabsTrigger>
         <TabsTrigger value="news">News &amp; Sentiment</TabsTrigger>
         <TabsTrigger value="earnings">Earnings</TabsTrigger>
@@ -60,6 +62,9 @@ export function StockTabs({ data, portfolio }: { data: StockData; portfolio: Por
       </TabsContent>
       <TabsContent value="historical">
         <HistoricalTab data={data} />
+      </TabsContent>
+      <TabsContent value="price-action">
+        <PriceActionTab data={data} />
       </TabsContent>
       <TabsContent value="technical">
         <TechnicalAnalysisTab data={data} />

@@ -620,3 +620,312 @@ export function findContractByDelta(
 
   return best;
 }
+
+// ---------------------------------------------------------------------------
+// Intraday stock OHLC (1-minute candles with extended hours)
+// ---------------------------------------------------------------------------
+
+export interface IntradayCandle {
+  timestamp: string; // ISO string
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  session: "pre" | "regular" | "post";
+}
+
+interface ThetaDataOHLCEntity {
+  timestamp: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+}
+
+function classifySession(timestampStr: string): "pre" | "regular" | "post" {
+  // ThetaData timestamps are in ET (market time). Parse the time portion.
+  // Pre-market: 04:00 - 09:30, Regular: 09:30 - 16:00, Post: 16:00 - 20:00
+  const t = new Date(timestampStr);
+  const hours = t.getUTCHours() - 5; // Convert UTC to ET (approximate, ignore DST)
+  const minutes = t.getUTCMinutes();
+  const totalMin = hours * 60 + minutes;
+
+  if (totalMin < 9 * 60 + 30) return "pre";
+  if (totalMin < 16 * 60) return "regular";
+  return "post";
+}
+
+/**
+ * Fetch 1-minute intraday OHLC candles for a symbol over a date range.
+ *
+ * ThetaData limits multi-day requests to 1 month, so this function fetches
+ * month by month. Extended hours (04:00-20:00 ET) are included by default.
+ *
+ * Results are cached in the IntradayPrice DB table. On subsequent calls for
+ * the same symbol/date range, cached data is loaded from DB and only missing
+ * dates are fetched from ThetaData.
+ *
+ * @param symbol Stock ticker
+ * @param startDate YYYY-MM-DD
+ * @param endDate YYYY-MM-DD
+ * @param onProgress Optional callback (done, total, cachedCount)
+ * @returns Array of IntradayCandle sorted by timestamp
+ */
+export async function fetchIntradayCandles(
+  symbol: string,
+  startDate: string,
+  endDate: string,
+  onProgress?: (done: number, total: number, cachedCount: number) => void,
+): Promise<IntradayCandle[]> {
+  const sym = symbol.toUpperCase();
+  const base = getBaseUrl();
+  const interval = "1m";
+  const start = new Date(startDate + "T00:00:00");
+  const end = new Date(endDate + "T00:00:00");
+
+  // Generate list of months to fetch (ThetaData limits multi-day to 1 month)
+  const months: { start: string; end: string }[] = [];
+  const cursor = new Date(start.getFullYear(), start.getMonth(), 1);
+  while (cursor <= end) {
+    const monthStart = new Date(cursor);
+    const monthEnd = new Date(cursor.getFullYear(), cursor.getMonth() + 1, 0);
+    const actualStart = monthStart < start ? start : monthStart;
+    const actualEnd = monthEnd > end ? end : monthEnd;
+    months.push({
+      start: actualStart.toISOString().slice(0, 10).replace(/-/g, ""),
+      end: actualEnd.toISOString().slice(0, 10).replace(/-/g, ""),
+    });
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+
+  // Phase 1: Check DB cache — find which dates we already have
+  const cachedDates = new Set<string>();
+  try {
+    const existing = await prisma.intradayPrice.findMany({
+      where: {
+        symbol: sym,
+        date: { gte: start, lte: end },
+        interval,
+      },
+      select: { date: true },
+      distinct: ["date"],
+    });
+    for (const row of existing) {
+      cachedDates.add(row.date.toISOString().slice(0, 10));
+    }
+  } catch (err) {
+    console.warn("[thetadata] Intraday DB cache read failed:", err);
+  }
+
+  // Generate all trading dates in range (skip weekends)
+  const allDates: string[] = [];
+  const d = new Date(start);
+  while (d <= end) {
+    const day = d.getDay();
+    if (day !== 0 && day !== 6) {
+      allDates.push(d.toISOString().slice(0, 10));
+    }
+    d.setDate(d.getDate() + 1);
+  }
+
+  const datesToFetch = allDates.filter((dt) => !cachedDates.has(dt));
+  const cachedCount = allDates.length - datesToFetch.length;
+
+  if (datesToFetch.length === 0) {
+    console.log(`[thetadata] All ${allDates.length} intraday dates served from DB cache for ${sym}`);
+    // Load from DB
+    const rows = await prisma.intradayPrice.findMany({
+      where: { symbol: sym, date: { gte: start, lte: end }, interval },
+      orderBy: { timestamp: "asc" },
+    });
+    return rows.map((r) => ({
+      timestamp: r.timestamp.toISOString(),
+      open: Number(r.open),
+      high: Number(r.high),
+      low: Number(r.low),
+      close: Number(r.close),
+      volume: r.volume ? Number(r.volume) : 0,
+      session: r.session as "pre" | "regular" | "post",
+    }));
+  }
+
+  console.log(`[thetadata] Intraday cache: ${cachedCount}/${allDates.length} dates cached, fetching ${datesToFetch.length} from ThetaData for ${sym}`);
+
+  // Phase 2: Fetch missing months from ThetaData
+  const headers: Record<string, string> = {};
+  const apiKey = process.env.THETADATA_API_KEY;
+  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+  const delayMs = Number(process.env.THETADATA_REQ_DELAY_MS ?? 200);
+  const concurrency = Math.max(1, Number(process.env.THETADATA_CONCURRENCY ?? 1));
+  let done = cachedCount;
+  let totalSaved = 0;
+  const SAVE_BATCH = 500; // Batch size for DB inserts (1 day = ~960 candles)
+  let pendingSave: IntradayCandle[] = [];
+
+  async function flushSave() {
+    if (pendingSave.length === 0) return;
+    const batch = pendingSave;
+    pendingSave = [];
+    try {
+      await prisma.intradayPrice.createMany({
+        data: batch.map((c) => ({
+          symbol: sym,
+          date: new Date(c.timestamp.slice(0, 10) + "T00:00:00"),
+          timestamp: new Date(c.timestamp),
+          interval,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: BigInt(c.volume),
+          session: c.session,
+        })),
+        skipDuplicates: true,
+      });
+      totalSaved += batch.length;
+    } catch (err) {
+      console.warn(`[thetadata] Intraday DB cache write failed (${batch.length} rows):`, err);
+    }
+  }
+
+  async function fetchMonth(monthStart: string, monthEnd: string): Promise<IntradayCandle[]> {
+    const params = new URLSearchParams({
+      symbol: sym,
+      start_date: monthStart,
+      end_date: monthEnd,
+      interval,
+      start_time: "04:00:00.000",
+      end_time: "20:00:00.000",
+    });
+    const url = `${base}/stock/history/ohlc?${params.toString()}`;
+
+    try {
+      const res = await fetch(url, { headers, cache: "no-store" });
+      if (!res.ok) {
+        console.warn(`ThetaData intraday fetch failed for ${sym} ${monthStart}-${monthEnd}: ${res.status}`);
+        return [];
+      }
+      const text = await res.text();
+      let json: { response?: ThetaDataOHLCEntity[]; data?: ThetaDataOHLCEntity[] };
+      try {
+        json = JSON.parse(text);
+      } catch {
+        console.warn(`ThetaData intraday non-JSON for ${sym} ${monthStart}-${monthEnd}: ${text.slice(0, 300)}`);
+        return [];
+      }
+      const entries = json.response ?? json.data;
+      if (!entries || !Array.isArray(entries)) return [];
+
+      const candles: IntradayCandle[] = [];
+      for (const entry of entries) {
+        candles.push({
+          timestamp: entry.timestamp,
+          open: entry.open,
+          high: entry.high,
+          low: entry.low,
+          close: entry.close,
+          volume: entry.volume ?? 0,
+          session: classifySession(entry.timestamp),
+        });
+      }
+      return candles;
+    } catch (err) {
+      console.warn(`ThetaData intraday fetch error for ${sym} ${monthStart}-${monthEnd}: ${(err as Error).message}`);
+      return [];
+    }
+  }
+
+  const allCandles: IntradayCandle[] = [];
+
+  // Load any cached candles from DB
+  if (cachedCount > 0) {
+    try {
+      const rows = await prisma.intradayPrice.findMany({
+        where: { symbol: sym, date: { gte: start, lte: end }, interval },
+        orderBy: { timestamp: "asc" },
+      });
+      for (const r of rows) {
+        allCandles.push({
+          timestamp: r.timestamp.toISOString(),
+          open: Number(r.open),
+          high: Number(r.high),
+          low: Number(r.low),
+          close: Number(r.close),
+          volume: r.volume ? Number(r.volume) : 0,
+          session: r.session as "pre" | "regular" | "post",
+        });
+      }
+    } catch (err) {
+      console.warn("[thetadata] Failed to load cached intraday data:", err);
+    }
+  }
+
+  // Fetch missing months
+  // Only fetch months that contain dates we need
+  const monthsToFetch = months.filter((m) => {
+    const mStart = m.start.slice(0, 4) + "-" + m.start.slice(4, 6) + "-" + m.start.slice(6, 8);
+    const mEnd = m.end.slice(0, 4) + "-" + m.end.slice(4, 6) + "-" + m.end.slice(6, 8);
+    return datesToFetch.some((dt) => dt >= mStart && dt <= mEnd);
+  });
+
+  if (concurrency === 1) {
+    for (const month of monthsToFetch) {
+      const candles = await fetchMonth(month.start, month.end);
+      allCandles.push(...candles);
+      pendingSave.push(...candles);
+
+      // Estimate progress by counting dates in this month
+      const monthDates = datesToFetch.filter((dt) => {
+        const mStart = month.start.slice(0, 4) + "-" + month.start.slice(4, 6) + "-" + month.start.slice(6, 8);
+        const mEnd = month.end.slice(0, 4) + "-" + month.end.slice(4, 6) + "-" + month.end.slice(6, 8);
+        return dt >= mStart && dt <= mEnd;
+      });
+      done += monthDates.length;
+      onProgress?.(done, allDates.length, cachedCount);
+
+      if (pendingSave.length >= SAVE_BATCH) {
+        await flushSave();
+      }
+
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  } else {
+    let idx = 0;
+    async function worker() {
+      while (idx < monthsToFetch.length) {
+        const month = monthsToFetch[idx++]!;
+        const candles = await fetchMonth(month.start, month.end);
+        allCandles.push(...candles);
+        pendingSave.push(...candles);
+
+        const monthDates = datesToFetch.filter((dt) => {
+          const mStart = month.start.slice(0, 4) + "-" + month.start.slice(4, 6) + "-" + month.start.slice(6, 8);
+          const mEnd = month.end.slice(0, 4) + "-" + month.end.slice(4, 6) + "-" + month.end.slice(6, 8);
+          return dt >= mStart && dt <= mEnd;
+        });
+        done += monthDates.length;
+        onProgress?.(done, allDates.length, cachedCount);
+
+        if (pendingSave.length >= SAVE_BATCH) {
+          await flushSave();
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  }
+
+  // Flush remaining
+  await flushSave();
+  if (totalSaved > 0) {
+    console.log(`[thetadata] Saved ${totalSaved} intraday candles to DB cache for ${sym}`);
+  }
+
+  // Sort all candles by timestamp
+  allCandles.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  return allCandles;
+}

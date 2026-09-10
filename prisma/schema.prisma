@@ -411,6 +411,29 @@ model HistoricalPrice {
 }
 
 // ---------------------------------------------------------------------------
+// Intraday Price Cache (1-minute candles with extended hours from ThetaData)
+// ---------------------------------------------------------------------------
+
+model IntradayPrice {
+  id        String   @id @default(cuid())
+  symbol    String
+  date      DateTime @db.Date
+  timestamp DateTime
+  interval  String   @default("1m")
+  open      Decimal  @db.Decimal(18, 6)
+  high      Decimal  @db.Decimal(18, 6)
+  low       Decimal  @db.Decimal(18, 6)
+  close     Decimal  @db.Decimal(18, 6)
+  volume    BigInt?
+  session   String   @default("regular")
+  fetchedAt DateTime @default(now())
+
+  @@unique([symbol, timestamp, interval])
+  @@index([symbol, date])
+  @@index([symbol, timestamp])
+}
+
+// ---------------------------------------------------------------------------
 // Optimizer Result Cache (global, shared across all users)
 // ---------------------------------------------------------------------------
 
