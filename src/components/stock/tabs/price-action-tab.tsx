@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button, Input, Label } from "@/components/ui";
-import { Activity, Database } from "lucide-react";
+import { Activity, Database, TrendingUp } from "lucide-react";
+import { CandlestickChart, type CandleData } from "@/components/charts/candlestick-chart";
 import {
   ComposedChart,
   Line,
@@ -13,10 +14,19 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  ReferenceLine,
-  BarChart,
 } from "recharts";
 import type { StockData } from "@/features/options/stock-data";
+
+interface OptionPricePoint {
+  date: string;
+  bid: number;
+  ask: number;
+  mid: number;
+  close: number;
+  volume: number;
+  openInterest: number;
+  underlyingPrice: number;
+}
 
 interface IntradayCandle {
   timestamp: string;
@@ -35,6 +45,14 @@ export function PriceActionTab({ data }: { data: StockData }) {
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Option overlay state
+  const [selectedExpiration, setSelectedExpiration] = useState("");
+  const [selectedStrike, setSelectedStrike] = useState("");
+  const [selectedRight, setSelectedRight] = useState<"CALL" | "PUT">("CALL");
+  const [optionHistory, setOptionHistory] = useState<OptionPricePoint[]>([]);
+  const [optionLoading, setOptionLoading] = useState(false);
+  const [optionError, setOptionError] = useState<string | null>(null);
 
   // Default to last 30 days
   function defaultDates() {
@@ -89,6 +107,94 @@ export function PriceActionTab({ data }: { data: StockData }) {
       setLoading(false);
     }
   }
+
+  async function fetchOptionHistory() {
+    if (!selectedExpiration || !selectedStrike) {
+      setOptionError("Select expiration and strike");
+      return;
+    }
+    setOptionLoading(true);
+    setOptionError(null);
+    setOptionHistory([]);
+    try {
+      const res = await fetch("/api/stock/option-history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: data.symbol,
+          strike: Number(selectedStrike),
+          expiration: selectedExpiration,
+          right: selectedRight,
+          startDate: startDate || new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10),
+          endDate: endDate || new Date().toISOString().slice(0, 10),
+        }),
+      });
+      if (!res.ok) throw new Error("Failed to fetch option history");
+      const json = await res.json() as { series: OptionPricePoint[]; error?: string };
+      if (json.error) throw new Error(json.error);
+      setOptionHistory(json.series);
+      if (json.series.length === 0) {
+        setOptionError("No cached EOD data found for this contract. Run a backtest or pre-fetch cache first.");
+      }
+    } catch (e) {
+      setOptionError((e as Error).message);
+    } finally {
+      setOptionLoading(false);
+    }
+  }
+
+  // Build daily OHLC from intraday candles for the candlestick chart
+  const dailyCandles: CandleData[] = useMemo(() => {
+    if (candles.length === 0) return [];
+    const byDay = new Map<string, IntradayCandle[]>();
+    for (const c of candles) {
+      const day = c.timestamp.slice(0, 10);
+      if (!byDay.has(day)) byDay.set(day, []);
+      byDay.get(day)!.push(c);
+    }
+    return Array.from(byDay.entries())
+      .map(([date, dayCandles]) => {
+        const sorted = dayCandles.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+        return {
+          date,
+          open: sorted[0]!.open,
+          high: Math.max(...sorted.map((c) => c.high)),
+          low: Math.min(...sorted.map((c) => c.low)),
+          close: sorted[sorted.length - 1]!.close,
+          volume: sorted.reduce((s, c) => s + c.volume, 0),
+        };
+      })
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }, [candles]);
+
+  // Option overlay data for the candlestick chart
+  const optionOverlay = useMemo(() => {
+    if (optionHistory.length === 0) return undefined;
+    return optionHistory.map((p) => ({ date: p.date, value: p.mid }));
+  }, [optionHistory]);
+
+  // Option price chart data
+  const optionChartData = optionHistory.map((p) => ({
+    date: p.date,
+    bid: p.bid,
+    ask: p.ask,
+    mid: p.mid,
+    close: p.close,
+    volume: p.volume,
+    underlying: p.underlyingPrice,
+  }));
+
+  // Available strikes based on current stock price
+  const availableStrikes = useMemo(() => {
+    const price = data.quote.price;
+    if (price <= 0) return [];
+    const interval = price >= 200 ? 5 : price >= 50 ? 2.5 : 1;
+    const strikes: number[] = [];
+    for (let s = Math.floor(price * 0.7 / interval) * interval; s <= Math.ceil(price * 1.3 / interval) * interval; s += interval) {
+      strikes.push(Number(s.toFixed(2)));
+    }
+    return strikes;
+  }, [data.quote.price]);
 
   // Aggregate candles by day for daily summary
   const dailySummary = candles.length > 0
@@ -287,13 +393,15 @@ export function PriceActionTab({ data }: { data: StockData }) {
                   <ComposedChart data={lastDayChartData}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                     <XAxis dataKey="time" className="text-xs" interval={30} />
-                    <YAxis yAxisId="price" className="text-xs" domain={["auto", "auto"]} />
-                    <YAxis yAxisId="vol" orientation="right" className="text-xs" />
+                    <YAxis yAxisId="price" className="text-xs" tickFormatter={(v: number) => `$${v.toFixed(2)}`} />
+                    <YAxis yAxisId="vol" orientation="right" className="text-xs" tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}k`} />
                     <Tooltip
-                      contentStyle={{ backgroundColor: "hsl(var(--background))", border: "1px solid hsl(var(--border))" }}
+                      contentStyle={{ backgroundColor: "hsl(var(--background))", border: "1px solid hsl(var(--border))", borderRadius: "6px" }}
+                      formatter={(value: unknown, name: string) => {
+                        if (typeof value === "number") return [`$${value.toFixed(2)}`, name];
+                        return [String(value), name];
+                      }}
                     />
-                    <ReferenceLine x="09:30" yAxisId="price" stroke="#3b82f6" strokeDasharray="3 3" label={{ value: "Open", position: "top", fill: "#3b82f6", fontSize: 10 }} />
-                    <ReferenceLine x="16:00" yAxisId="price" stroke="#a855f7" strokeDasharray="3 3" label={{ value: "Close", position: "top", fill: "#a855f7", fontSize: 10 }} />
                     <Line yAxisId="price" type="monotone" dataKey="close" stroke="hsl(var(--primary))" strokeWidth={1.5} dot={false} />
                     <Bar yAxisId="vol" dataKey="volume" fill="hsl(var(--muted))" opacity={0.3} />
                   </ComposedChart>
@@ -302,27 +410,142 @@ export function PriceActionTab({ data }: { data: StockData }) {
             </Card>
           )}
 
-          {/* Daily Summary Chart */}
-          {dailySummary.length > 0 && (
+          {/* Daily Candlestick Chart with Option Overlay */}
+          {dailyCandles.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle>Daily Price & Volume</CardTitle>
-                <CardDescription>Close price and total volume per trading day</CardDescription>
+                <CardTitle className="flex items-center gap-2">
+                  <TrendingUp className="h-5 w-5" />
+                  Daily Price Chart
+                </CardTitle>
+                <CardDescription>
+                  OHLC candlesticks with volume.{optionOverlay && " Option price overlay shown in orange."}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {/* Option Contract Selector */}
+                <div className="mb-4 flex flex-wrap items-end gap-3 rounded-md border p-3">
+                  <div>
+                    <Label className="text-xs">Expiration</Label>
+                    <select
+                      value={selectedExpiration}
+                      onChange={(e) => setSelectedExpiration(e.target.value)}
+                      className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                    >
+                      <option value="">Select…</option>
+                      {data.expirations.slice(0, 20).map((e) => (
+                        <option key={e.expirationDate} value={e.expirationDate}>
+                          {e.expirationDate} ({e.daysToExpiration}d)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <Label className="text-xs">Strike</Label>
+                    <select
+                      value={selectedStrike}
+                      onChange={(e) => setSelectedStrike(e.target.value)}
+                      className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                    >
+                      <option value="">Select…</option>
+                      {availableStrikes.map((s) => (
+                        <option key={s} value={s}>${s.toFixed(2)}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <Label className="text-xs">Type</Label>
+                    <select
+                      value={selectedRight}
+                      onChange={(e) => setSelectedRight(e.target.value as "CALL" | "PUT")}
+                      className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                    >
+                      <option value="CALL">CALL</option>
+                      <option value="PUT">PUT</option>
+                    </select>
+                  </div>
+                  <Button
+                    onClick={fetchOptionHistory}
+                    disabled={optionLoading || !selectedExpiration || !selectedStrike}
+                    size="sm"
+                    variant="outline"
+                    className="gap-1.5"
+                  >
+                    <TrendingUp className="h-3.5 w-3.5" />
+                    {optionLoading ? "Loading…" : "Overlay Option Price"}
+                  </Button>
+                  {optionError && (
+                    <span className="self-center text-xs text-destructive">{optionError}</span>
+                  )}
+                  {optionHistory.length > 0 && (
+                    <span className="self-center text-xs text-muted-foreground">
+                      {optionHistory.length} data points
+                    </span>
+                  )}
+                </div>
+
+                <CandlestickChart
+                  data={dailyCandles}
+                  height={400}
+                  overlayData={optionOverlay}
+                  overlayLabel={`${selectedRight} $${selectedStrike} ${selectedExpiration}`}
+                />
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Option Price History Chart */}
+          {optionChartData.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <TrendingUp className="h-5 w-5" />
+                  Option Price History — {selectedRight} ${selectedStrike} {selectedExpiration}
+                </CardTitle>
+                <CardDescription>
+                  Bid/Ask/Mid and volume for the selected contract from cached EOD data
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <ResponsiveContainer width="100%" height={300}>
-                  <ComposedChart data={dailySummary}>
+                  <ComposedChart data={optionChartData} margin={{ top: 10, right: 50, bottom: 0, left: 10 }}>
                     <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                    <XAxis dataKey="date" className="text-xs" />
-                    <YAxis yAxisId="price" className="text-xs" domain={["auto", "auto"]} />
-                    <YAxis yAxisId="vol" orientation="right" className="text-xs" />
+                    <XAxis dataKey="date" className="text-xs" interval={Math.max(1, Math.floor(optionChartData.length / 10))} tickFormatter={(v: string) => v.slice(5)} />
+                    <YAxis yAxisId="price" className="text-xs" tickFormatter={(v: number) => `$${v.toFixed(2)}`} />
+                    <YAxis yAxisId="vol" orientation="right" className="text-xs" tickFormatter={(v: number) => `${(v / 1000).toFixed(0)}k`} />
                     <Tooltip
-                      contentStyle={{ backgroundColor: "hsl(var(--background))", border: "1px solid hsl(var(--border))" }}
+                      contentStyle={{ backgroundColor: "hsl(var(--background))", border: "1px solid hsl(var(--border))", borderRadius: "6px" }}
+                      formatter={(value: unknown, name: string) => {
+                        if (typeof value === "number") return [`$${value.toFixed(2)}`, name];
+                        return [String(value), name];
+                      }}
                     />
-                    <Line yAxisId="price" type="monotone" dataKey="close" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} />
-                    <Bar yAxisId="vol" dataKey="totalVol" fill="hsl(var(--muted))" opacity={0.3} />
+                    <Line yAxisId="price" type="monotone" dataKey="mid" stroke="#f59e0b" strokeWidth={2} dot={false} name="Mid" />
+                    <Line yAxisId="price" type="monotone" dataKey="bid" stroke="#3b82f6" strokeWidth={1} dot={false} name="Bid" />
+                    <Line yAxisId="price" type="monotone" dataKey="ask" stroke="#ef4444" strokeWidth={1} dot={false} name="Ask" />
+                    <Bar yAxisId="vol" dataKey="volume" fill="hsl(var(--muted))" opacity={0.2} name="Volume" />
                   </ComposedChart>
                 </ResponsiveContainer>
+
+                {/* Option Stats */}
+                <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+                  <div className="rounded-lg border p-3">
+                    <p className="text-xs text-muted-foreground">Current Mid</p>
+                    <p className="text-xl font-bold">${optionChartData[optionChartData.length - 1]?.mid.toFixed(2)}</p>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <p className="text-xs text-muted-foreground">Period High</p>
+                    <p className="text-xl font-bold">${Math.max(...optionChartData.map((d) => d.mid)).toFixed(2)}</p>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <p className="text-xs text-muted-foreground">Period Low</p>
+                    <p className="text-xl font-bold">${Math.min(...optionChartData.map((d) => d.mid)).toFixed(2)}</p>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <p className="text-xs text-muted-foreground">Total Volume</p>
+                    <p className="text-xl font-bold">{optionChartData.reduce((s, d) => s + d.volume, 0).toLocaleString()}</p>
+                  </div>
+                </div>
               </CardContent>
             </Card>
           )}
