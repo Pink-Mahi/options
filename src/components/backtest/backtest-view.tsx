@@ -344,6 +344,10 @@ export function BacktestView() {
     setRollOnAssignment(r.rollOnAssignment);
     // Pass overrides directly to run() — state updates are async and
     // won't be reflected when run() reads them synchronously.
+    // disableGtcTouch matches the optimizer, which can't use GTC touch
+    // simulation (too slow for 548 combinations). Without this, the full
+    // backtest would use real intraday data for buyback checks and produce
+    // different cycle counts.
     run({
       strategy: r.strategy as StrategyOption,
       deltaTarget: r.deltaTarget,
@@ -354,6 +358,7 @@ export function BacktestView() {
       neverBelowCost: r.neverBelowCost,
       averageDown: r.averageDown,
       rollOnAssignment: r.rollOnAssignment,
+      disableGtcTouch: true,
     });
   }
 
@@ -406,6 +411,7 @@ export function BacktestView() {
     neverBelowCost?: boolean;
     averageDown?: boolean;
     rollOnAssignment?: boolean;
+    disableGtcTouch?: boolean;
   }) {
     // Guard against MouseEvent passed by onClick={run}
     const o = overrides && "strategy" in overrides ? overrides : undefined;
@@ -441,6 +447,7 @@ export function BacktestView() {
           buyBackPct: effBuyBack > 0 ? effBuyBack / 100 : undefined,
           minPutPremiumYieldPct: effMinPut > 0 ? effMinPut / 100 : undefined,
           rollOnAssignment: effRoll,
+          disableGtcTouch: o?.disableGtcTouch,
         }),
         cache: "no-store",
       });

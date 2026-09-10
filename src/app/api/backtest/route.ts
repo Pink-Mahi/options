@@ -123,10 +123,11 @@ export async function POST(req: Request) {
           }
         }
 
-        // GTC touch simulation setup
+        // GTC touch simulation setup (disabled when matching optimizer results)
+        const disableGtcTouch = body.disableGtcTouch === true;
         let getDailyRows: Parameters<typeof runBacktest>[1]["getDailyRows"];
         let touchFetchCount = 0;
-        if (realData) {
+        if (realData && !disableGtcTouch) {
           const rowsCache = new Map<string, Map<string, ThetaDataEODQuote>>();
           const reqDelayMs = Number(process.env.THETADATA_REQ_DELAY_MS ?? 200);
           getDailyRows = async (c) => {
