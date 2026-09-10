@@ -442,42 +442,29 @@ export async function prefetchEODChains(
     }
   }
 
-  // --- Phase 3: Persist newly fetched chains to the DB (batched) ---
+  // --- Phase 3: Persist newly fetched chains to the DB (bulk insert) ---
   if (fetchedRows.length > 0) {
-    const BATCH_SIZE = 25;
     const farFuture = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000); // 1 year TTL
-    let saved = 0;
-    for (let i = 0; i < fetchedRows.length; i += BATCH_SIZE) {
-      const batch = fetchedRows.slice(i, i + BATCH_SIZE);
-      try {
-        await Promise.all(
-          batch.map((row) =>
-            prisma.marketDataCache.upsert({
-              where: { cacheKey: row.cacheKey },
-              create: {
-                cacheKey: row.cacheKey,
-                kind: "eod_chain",
-                symbol: sym,
-                payload: row.payload as unknown as import("@prisma/client").Prisma.InputJsonValue,
-                expiresAt: farFuture,
-              },
-              update: {
-                payload: row.payload as unknown as import("@prisma/client").Prisma.InputJsonValue,
-                expiresAt: farFuture,
-              },
-            }),
-          ),
-        );
-        saved += batch.length;
-        if (saved % 100 === 0 || saved === fetchedRows.length) {
-          console.log(`[thetadata] DB cache write progress: ${saved}/${fetchedRows.length} for ${sym}`);
-        }
-      } catch (err) {
-        console.warn(`[thetadata] DB cache write batch failed (${i}-${i + batch.length}) for ${sym}:`, err);
-        // Non-fatal — the backtest still works with the in-memory cache
-      }
+    try {
+      // createMany with skipDuplicates is a single bulk INSERT — orders of
+      // magnitude faster than 721 individual upserts (each of which does a
+      // SELECT + INSERT). If a row already exists from a concurrent run,
+      // skipDuplicates silently ignores it.
+      await prisma.marketDataCache.createMany({
+        data: fetchedRows.map((row) => ({
+          cacheKey: row.cacheKey,
+          kind: "eod_chain",
+          symbol: sym,
+          payload: row.payload as unknown as import("@prisma/client").Prisma.InputJsonValue,
+          expiresAt: farFuture,
+        })),
+        skipDuplicates: true,
+      });
+      console.log(`[thetadata] Saved ${fetchedRows.length} new EOD chains to DB cache for ${sym}`);
+    } catch (err) {
+      console.warn(`[thetadata] DB cache write failed for ${sym}:`, err);
+      // Non-fatal — the backtest still works with the in-memory cache
     }
-    console.log(`[thetadata] Saved ${saved}/${fetchedRows.length} new EOD chains to DB cache for ${sym}`);
   }
 
   return cache;
