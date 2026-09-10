@@ -70,6 +70,9 @@ export async function POST(req: Request) {
           candleCount: candles.length,
           candles: candles.slice(-5000), // Last 5000 candles to avoid huge payloads
           message: `Loaded ${candles.length} candles for ${symbol}`,
+          warning: candles.length > 0 && (candles[0]?.timestamp?.length ?? 0) <= 10
+            ? "Using daily EOD data (free tier). Intraday 1-minute candles require a ThetaData 'value' subscription."
+            : undefined,
         });
       } catch (err) {
         send({ type: "error", error: (err as Error).message });

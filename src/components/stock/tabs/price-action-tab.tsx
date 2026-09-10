@@ -46,6 +46,8 @@ export function PriceActionTab({ data }: { data: StockData }) {
   const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const [warning, setWarning] = useState<string | null>(null);
+
   // Option overlay state
   const [selectedExpiration, setSelectedExpiration] = useState("");
   const [selectedStrike, setSelectedStrike] = useState("");
@@ -70,6 +72,7 @@ export function PriceActionTab({ data }: { data: StockData }) {
     }
     setLoading(true);
     setError(null);
+    setWarning(null);
     setProgress("Starting…");
     setCandles([]);
     try {
@@ -90,12 +93,13 @@ export function PriceActionTab({ data }: { data: StockData }) {
         buffer = lines.pop() ?? "";
         for (const line of lines) {
           if (!line.trim()) continue;
-          const evt = JSON.parse(line) as { type: string; message?: string; error?: string; candles?: IntradayCandle[]; candleCount?: number };
+          const evt = JSON.parse(line) as { type: string; message?: string; error?: string; candles?: IntradayCandle[]; candleCount?: number; warning?: string };
           if (evt.type === "progress") {
             setProgress(evt.message ?? "Working…");
           } else if (evt.type === "result") {
             setCandles(evt.candles ?? []);
             setProgress(`${evt.candleCount ?? 0} candles loaded`);
+            if (evt.warning) setWarning(evt.warning);
           } else if (evt.type === "error") {
             throw new Error(evt.error ?? "Fetch failed");
           }
@@ -329,6 +333,12 @@ export function PriceActionTab({ data }: { data: StockData }) {
           {error && (
             <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
               {error}
+            </div>
+          )}
+
+          {warning && !error && (
+            <div className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-600 dark:text-amber-400">
+              {warning}
             </div>
           )}
         </CardContent>

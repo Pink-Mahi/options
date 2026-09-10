@@ -791,6 +791,8 @@ export async function fetchIntradayCandles(
     }
   }
 
+  let usingFallback = false;
+
   async function fetchMonth(monthStart: string, monthEnd: string): Promise<IntradayCandle[]> {
     const params = new URLSearchParams({
       symbol: sym,
@@ -804,38 +806,105 @@ export async function fetchIntradayCandles(
 
     try {
       const res = await fetch(url, { headers, cache: "no-store" });
-      if (!res.ok) {
+      if (res.status === 403 && !usingFallback) {
+        // Stock OHLC requires "value" subscription; fall back to free EOD endpoint
+        usingFallback = true;
+        console.warn(`[thetadata] Stock OHLC 403 — falling back to /stock/history/eod (daily, free tier) for ${sym}`);
+      } else if (!res.ok) {
         console.warn(`ThetaData intraday fetch failed for ${sym} ${monthStart}-${monthEnd}: ${res.status}`);
         return [];
+      } else {
+        return parseOHLCResponse(await res.text(), sym, monthStart, monthEnd);
       }
-      const text = await res.text();
-      let json: { response?: ThetaDataOHLCEntity[]; data?: ThetaDataOHLCEntity[] };
-      try {
-        json = JSON.parse(text);
-      } catch {
-        console.warn(`ThetaData intraday non-JSON for ${sym} ${monthStart}-${monthEnd}: ${text.slice(0, 300)}`);
-        return [];
-      }
-      const entries = json.response ?? json.data;
-      if (!entries || !Array.isArray(entries)) return [];
-
-      const candles: IntradayCandle[] = [];
-      for (const entry of entries) {
-        candles.push({
-          timestamp: entry.timestamp,
-          open: entry.open,
-          high: entry.high,
-          low: entry.low,
-          close: entry.close,
-          volume: entry.volume ?? 0,
-          session: classifySession(entry.timestamp),
-        });
-      }
-      return candles;
     } catch (err) {
       console.warn(`ThetaData intraday fetch error for ${sym} ${monthStart}-${monthEnd}: ${(err as Error).message}`);
       return [];
     }
+
+    // Fallback: use /stock/history/eod (free tier, daily EOD)
+    const eodParams = new URLSearchParams({
+      symbol: sym,
+      start_date: monthStart,
+      end_date: monthEnd,
+      format: "json",
+    });
+    const eodUrl = `${base}/stock/history/eod?${eodParams.toString()}`;
+    try {
+      const eodRes = await fetch(eodUrl, { headers, cache: "no-store" });
+      if (!eodRes.ok) {
+        console.warn(`ThetaData stock EOD fallback failed for ${sym} ${monthStart}-${monthEnd}: ${eodRes.status}`);
+        return [];
+      }
+      return parseEODResponse(await eodRes.text(), sym, monthStart, monthEnd);
+    } catch (err) {
+      console.warn(`ThetaData stock EOD fallback error for ${sym} ${monthStart}-${monthEnd}: ${(err as Error).message}`);
+      return [];
+    }
+  }
+
+  function parseOHLCResponse(text: string, sym: string, monthStart: string, monthEnd: string): IntradayCandle[] {
+    let json: { response?: ThetaDataOHLCEntity[]; data?: ThetaDataOHLCEntity[] };
+    try {
+      json = JSON.parse(text);
+    } catch {
+      console.warn(`ThetaData intraday non-JSON for ${sym} ${monthStart}-${monthEnd}: ${text.slice(0, 300)}`);
+      return [];
+    }
+    const entries = json.response ?? json.data;
+    if (!entries || !Array.isArray(entries)) return [];
+
+    const candles: IntradayCandle[] = [];
+    for (const entry of entries) {
+      candles.push({
+        timestamp: entry.timestamp,
+        open: entry.open,
+        high: entry.high,
+        low: entry.low,
+        close: entry.close,
+        volume: entry.volume ?? 0,
+        session: classifySession(entry.timestamp),
+      });
+    }
+    return candles;
+  }
+
+  interface ThetaDataStockEODEntry {
+    timestamp?: string;
+    date?: string;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume?: number;
+  }
+
+  function parseEODResponse(text: string, sym: string, monthStart: string, monthEnd: string): IntradayCandle[] {
+    let json: { response?: ThetaDataStockEODEntry[]; data?: ThetaDataStockEODEntry[] };
+    try {
+      json = JSON.parse(text);
+    } catch {
+      console.warn(`ThetaData stock EOD non-JSON for ${sym} ${monthStart}-${monthEnd}: ${text.slice(0, 300)}`);
+      return [];
+    }
+    const entries = json.response ?? json.data;
+    if (!entries || !Array.isArray(entries)) return [];
+
+    const candles: IntradayCandle[] = [];
+    for (const entry of entries) {
+      // Stock EOD may return either "timestamp" (ISO) or "date" (YYYY-MM-DD)
+      const rawTs = entry.timestamp ?? entry.date ?? "";
+      const ts = rawTs.length > 10 ? rawTs : rawTs + "T16:00:00.000Z";
+      candles.push({
+        timestamp: ts,
+        open: entry.open,
+        high: entry.high,
+        low: entry.low,
+        close: entry.close,
+        volume: entry.volume ?? 0,
+        session: "regular" as const,
+      });
+    }
+    return candles;
   }
 
   const allCandles: IntradayCandle[] = [];
