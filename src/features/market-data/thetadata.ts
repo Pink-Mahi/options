@@ -286,7 +286,7 @@ export async function fetchContractDailyRows(
 export async function prefetchEODChains(
   symbol: string,
   dates: string[],
-  onProgress?: (done: number, total: number) => void,
+  onProgress?: (done: number, total: number, cachedCount: number) => void,
 ): Promise<Map<string, ThetaDataEODQuote[]>> {
   const cache = new Map<string, ThetaDataEODQuote[]>();
   const sym = symbol.toUpperCase();
@@ -330,11 +330,12 @@ export async function prefetchEODChains(
   // --- Phase 2: Fetch missing dates from ThetaData ---
   const base = getBaseUrl();
   const delayMs = Number(process.env.THETADATA_REQ_DELAY_MS ?? 200);
+  const concurrency = Math.max(1, Number(process.env.THETADATA_CONCURRENCY ?? 1));
   let consecutiveFailures = 0;
   let done = cachedCount;
   let loggedEmptySample = false;
   const farFuture = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
-  const SAVE_BATCH = 10; // Save to DB every N fetched dates (pipelined with fetch)
+  const SAVE_BATCH = 10;
   let pendingSave: { cacheKey: string; payload: ThetaDataEODQuote[] }[] = [];
   let totalSaved = 0;
 
@@ -359,16 +360,14 @@ export async function prefetchEODChains(
     }
   }
 
-  for (const date of datesToFetch) {
-    if (consecutiveFailures >= 3) {
-      console.warn(
-        `[thetadata] Giving up on prefetch after ${consecutiveFailures} consecutive failures — terminal at ${base} is not reachable.`,
-      );
-      break;
-    }
+  const headers: Record<string, string> = {};
+  const apiKey = process.env.THETADATA_API_KEY;
+  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+  async function fetchOneDate(date: string): Promise<void> {
+    if (consecutiveFailures >= 3) return;
 
     const dateParam = formatDate(date);
-
     const params = new URLSearchParams({
       symbol: sym,
       start_date: dateParam,
@@ -378,12 +377,7 @@ export async function prefetchEODChains(
       right: "both",
       format: "json",
     });
-
     const url = `${base}/option/history/eod?${params.toString()}`;
-
-    const headers: Record<string, string> = {};
-    const apiKey = process.env.THETADATA_API_KEY;
-    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
     try {
       const res = await fetch(url, { headers, cache: "no-store" });
@@ -391,7 +385,7 @@ export async function prefetchEODChains(
         console.warn(`ThetaData fetch failed for ${sym} on ${date}: ${res.status}`);
         cache.set(date, []);
         consecutiveFailures++;
-        continue;
+        return;
       }
       consecutiveFailures = 0;
 
@@ -402,13 +396,13 @@ export async function prefetchEODChains(
       } catch {
         console.warn(`ThetaData returned non-JSON for ${sym} on ${date} (HTTP ${res.status}): ${text.slice(0, 300)}`);
         cache.set(date, []);
-        continue;
+        return;
       }
       const entries = json.response ?? json.data;
       if (!entries || !Array.isArray(entries)) {
         console.warn(`ThetaData unexpected response shape for ${sym} on ${date}: ${text.slice(0, 300)}`);
         cache.set(date, []);
-        continue;
+        return;
       }
 
       const quotes: ThetaDataEODQuote[] = [];
@@ -444,7 +438,6 @@ export async function prefetchEODChains(
         );
       }
       cache.set(date, quotes);
-      // Queue for DB persistence (only save non-empty to avoid caching failures)
       if (quotes.length > 0) {
         pendingSave.push({ cacheKey: `eod_chain:${sym}:${date}`, payload: quotes });
       }
@@ -453,24 +446,59 @@ export async function prefetchEODChains(
       cache.set(date, []);
       consecutiveFailures++;
     }
+  }
 
-    // Rate limit delay between requests (see THETADATA_REQ_DELAY_MS)
-    if (delayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-    }
+  if (concurrency === 1) {
+    // Sequential mode (FREE tier) — original behavior with rate-limit delay
+    for (const date of datesToFetch) {
+      if (consecutiveFailures >= 3) {
+        console.warn(
+          `[thetadata] Giving up on prefetch after ${consecutiveFailures} consecutive failures — terminal at ${base} is not reachable.`,
+        );
+        break;
+      }
 
-    done++;
-    onProgress?.(done, dates.length);
-    if (done % 20 === 0 || done === dates.length) {
-      console.log(`[thetadata] Prefetch progress: ${done}/${dates.length} (${cachedCount} from cache, ${done - cachedCount} fetched, ${totalSaved} saved to DB)...`);
-    }
+      await fetchOneDate(date);
 
-    // Pipeline: flush pending DB saves every SAVE_BATCH dates so writes
-    // overlap with the next ThetaData fetch (the rate-limit delay gives
-    // the DB write time to complete).
-    if (pendingSave.length >= SAVE_BATCH) {
-      await flushSave();
+      if (delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+
+      done++;
+      onProgress?.(done, dates.length, cachedCount);
+      if (done % 20 === 0 || done === dates.length) {
+        console.log(`[thetadata] Prefetch progress: ${done}/${dates.length} (${cachedCount} from cache, ${done - cachedCount} fetched, ${totalSaved} saved to DB)...`);
+      }
+
+      if (pendingSave.length >= SAVE_BATCH) {
+        await flushSave();
+      }
     }
+  } else {
+    // Concurrent mode (VALUE+ tier) — fire N requests in parallel
+    console.log(`[thetadata] Using concurrency=${concurrency} for ${datesToFetch.length} dates`);
+    let idx = 0;
+    async function worker() {
+      while (idx < datesToFetch.length && consecutiveFailures < 3) {
+        const date = datesToFetch[idx++]!;
+        await fetchOneDate(date);
+        done++;
+        onProgress?.(done, dates.length, cachedCount);
+        if (done % 20 === 0 || done === dates.length) {
+          console.log(`[thetadata] Prefetch progress: ${done}/${dates.length} (${cachedCount} from cache, ${done - cachedCount} fetched, ${totalSaved} saved to DB)...`);
+        }
+        if (pendingSave.length >= SAVE_BATCH) {
+          await flushSave();
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  }
+
+  if (consecutiveFailures >= 3) {
+    console.warn(
+      `[thetadata] Giving up on prefetch after ${consecutiveFailures} consecutive failures — terminal at ${base} is not reachable.`,
+    );
   }
 
   // Flush any remaining pending saves

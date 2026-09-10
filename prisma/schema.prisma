@@ -409,3 +409,19 @@ model HistoricalPrice {
   @@unique([symbol, date])
   @@index([symbol])
 }
+
+// ---------------------------------------------------------------------------
+// Optimizer Result Cache (global, shared across all users)
+// ---------------------------------------------------------------------------
+
+model OptimizerResultCache {
+  id            String   @id @default(cuid())
+  cacheKey      String   @unique
+  symbol        String
+  range         String
+  results       Json
+  meta          Json
+  createdAt     DateTime @default(now())
+
+  @@index([symbol, range])
+}

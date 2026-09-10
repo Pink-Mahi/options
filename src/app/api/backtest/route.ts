@@ -92,10 +92,12 @@ export async function POST(req: Request) {
             });
             console.log(`[backtest] Pre-fetching ${datesToFetch.length} EOD chains (DB cache + ThetaData)...`);
             try {
-              realData = await prefetchEODChains(symbol, datesToFetch, (doneNum, totalNum) => {
+              realData = await prefetchEODChains(symbol, datesToFetch, (doneNum, totalNum, cachedCount) => {
                 send({
                   type: "progress",
-                  message: `Loading EOD option chains — ${doneNum}/${totalNum} dates processed…`,
+                  message: cachedCount > 0
+                    ? `Loading EOD chains — ${doneNum}/${totalNum} (${cachedCount} from cache)`
+                    : `Loading EOD option chains — ${doneNum}/${totalNum} dates processed`,
                   stage: "prefetch",
                   done: doneNum,
                   total: totalNum,

@@ -20,7 +20,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { cn, formatCurrency, formatPercent } from "@/lib/utils";
 import type { BacktestResult } from "@/lib/calculations/backtester";
 import type { MarketContext } from "@/lib/calculations/market-context";
-import { Save, Bookmark, Trash2, ChevronDown, Sparkles, Activity } from "lucide-react";
+import { Save, Bookmark, Trash2, ChevronDown, Sparkles, Activity, Database } from "lucide-react";
 
 interface OptimizeResult {
   strategy: string;
@@ -136,6 +136,8 @@ export function BacktestView() {
     total?: number;
   } | null>(null);
   const [backtestElapsed, setBacktestElapsed] = useState(0);
+  const [preWarming, setPreWarming] = useState(false);
+  const [preWarmProgress, setPreWarmProgress] = useState<string | null>(null);
 
   useEffect(() => {
     fetch("/api/backtest-presets", { cache: "no-store" })
@@ -341,6 +343,45 @@ export function BacktestView() {
     setAverageDown(r.averageDown);
     setRollOnAssignment(r.rollOnAssignment);
     run();
+  }
+
+  async function preWarmCache() {
+    if (!symbol) return;
+    setPreWarming(true);
+    setPreWarmProgress("Starting…");
+    try {
+      const res = await fetch("/api/backtest/prefetch-cache", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol, range }),
+      });
+      if (!res.ok || !res.body) throw new Error("Failed to start pre-fetch");
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const evt = JSON.parse(line) as { type: string; message?: string; error?: string };
+          if (evt.type === "progress") {
+            setPreWarmProgress(evt.message ?? "Working…");
+          } else if (evt.type === "result") {
+            setPreWarmProgress(evt.message ?? "Done");
+          } else if (evt.type === "error") {
+            throw new Error(evt.error ?? "Pre-fetch failed");
+          }
+        }
+      }
+    } catch (e) {
+      setPreWarmProgress(`Error: ${(e as Error).message}`);
+    } finally {
+      setPreWarming(false);
+    }
   }
 
   async function run() {
@@ -721,6 +762,19 @@ export function BacktestView() {
             <Button variant="outline" onClick={runComparison} disabled={loading || !symbol}>
               {loading ? "Running…" : "Compare variants"}
             </Button>
+            <Button
+              variant="outline"
+              onClick={preWarmCache}
+              disabled={preWarming || loading || !symbol}
+              className="gap-1.5"
+              title="Pre-fetch EOD option chains from ThetaData and cache them in the database. Future backtests on this symbol/range will be instant."
+            >
+              <Database className="h-4 w-4" />
+              {preWarming ? "Pre-fetching…" : "Pre-fetch cache"}
+            </Button>
+            {preWarmProgress && (
+              <span className="self-center text-xs text-muted-foreground">{preWarmProgress}</span>
+            )}
             {result && (
               <Button variant="outline" onClick={exportCsv}>
                 Export CSV

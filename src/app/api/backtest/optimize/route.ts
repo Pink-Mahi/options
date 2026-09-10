@@ -14,6 +14,7 @@ import { getSessionUser } from "@/lib/auth";
 import { getHistoricalPrices, getQuote } from "@/features/market-data/service";
 import { runBacktest, type BacktestStrategy } from "@/lib/calculations/backtester";
 import { isThetaDataConfigured, prefetchEODChains, type ThetaDataEODQuote } from "@/features/market-data/thetadata";
+import { prisma } from "@/lib/database/prisma";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -261,6 +262,38 @@ export async function POST(req: Request) {
       };
 
       try {
+        // --- Check optimizer result cache ---
+        const cacheKey = `optimize:${symbol}:${range}:${sweepStrategies.join(",")}:${dteMin}:${dteMax}:${riskTolerance}:${goal}:${contracts}:${Number(body.sharesHeld) > 0 ? Number(body.sharesHeld) : 0}`;
+        try {
+          const cached = await prisma.optimizerResultCache.findUnique({
+            where: { cacheKey },
+            select: { results: true, meta: true, createdAt: true },
+          });
+          if (cached) {
+            const ageHours = (Date.now() - cached.createdAt.getTime()) / (1000 * 60 * 60);
+            // Cache valid for 24 hours — market data doesn't change enough to matter for historical backtests
+            if (ageHours < 24) {
+              console.log(`[optimize] Cache hit for ${cacheKey} (age: ${ageHours.toFixed(1)}h)`);
+              send({
+                type: "progress",
+                message: "Loading cached optimizer results…",
+                stage: "cache-hit",
+              });
+              const cachedResult = cached.results as Record<string, unknown>;
+              const cachedMeta = cached.meta as Record<string, unknown>;
+              send({
+                type: "result",
+                ...cachedResult,
+                ...cachedMeta,
+                fromCache: true,
+              });
+              return;
+            }
+          }
+        } catch (err) {
+          console.warn("[optimize] Cache read failed:", err);
+        }
+
         send({ type: "progress", message: "Loading price history…" });
 
         // Fetch data once
@@ -313,8 +346,8 @@ export async function POST(req: Request) {
               realData = await prefetchEODChains(
                 symbol,
                 datesToFetch,
-                (done, total) =>
-                  send({ type: "progress", stage: "prefetch", message: done < total ? `Loading EOD option chains — ${done}/${total} dates processed` : `Saving ${total} EOD chains to DB cache…`, done, total }),
+                (done, total, cachedCount) =>
+                  send({ type: "progress", stage: "prefetch", message: done < total ? `Loading EOD chains — ${done}/${total}${cachedCount > 0 ? ` (${cachedCount} from cache)` : ""}` : `Saving ${total} EOD chains to DB cache…`, done, total }),
               );
               const withData = Array.from(realData.values()).filter((q) => q.length > 0).length;
               console.log(`[optimize] ThetaData prefetch complete: ${withData}/${datesToFetch.length} dates returned real quotes`);
@@ -449,6 +482,45 @@ export async function POST(req: Request) {
               ? "ThetaData terminal is configured but no real data was returned for the sampled dates. All combinations use Black-Scholes model. Check that the terminal is running and the range is within your subscription tier."
               : "Option premiums are modeled with Black-Scholes using trailing 30-day realized volatility, not historical option quotes. Rankings are comparative within the same model, not absolute predictions. Past performance does not guarantee future results.",
         });
+
+        // --- Save optimizer results to cache ---
+        try {
+          const resultPayload = {
+            topResults: top20,
+            buyHoldReturn: top20[0]?.buyHoldReturn ?? 0,
+            realDataUsed: (top20[0]?.realDataCycles ?? 0) > 0,
+          };
+          const metaPayload = {
+            symbol,
+            range,
+            totalCombinations: allResults.length,
+            phase1Combinations: phase1Results.length,
+            phase2Combinations: allResults.length - phase1Results.length,
+            modelCaveat: realData && (top20[0]?.realDataCycles ?? 0) > 0
+              ? `Option premiums use real historical bid/ask from ThetaData where available. The optimizer fetched ${fetchedDatesCount} trading days across the sweep grid, so each combination blends real quotes with Black-Scholes fallback (see the Real column). Rankings compare strategies under the same data, not absolute predictions. Run a single backtest for full per-cycle real data.`
+              : realData
+                ? "ThetaData terminal is configured but no real data was returned for the sampled dates. All combinations use Black-Scholes model. Check that the terminal is running and the range is within your subscription tier."
+                : "Option premiums are modeled with Black-Scholes using trailing 30-day realized volatility, not historical option quotes. Rankings are comparative within the same model, not absolute predictions. Past performance does not guarantee future results.",
+          };
+          await prisma.optimizerResultCache.upsert({
+            where: { cacheKey },
+            create: {
+              cacheKey,
+              symbol,
+              range,
+              results: resultPayload as unknown as import("@prisma/client").Prisma.InputJsonValue,
+              meta: metaPayload as unknown as import("@prisma/client").Prisma.InputJsonValue,
+            },
+            update: {
+              results: resultPayload as unknown as import("@prisma/client").Prisma.InputJsonValue,
+              meta: metaPayload as unknown as import("@prisma/client").Prisma.InputJsonValue,
+              createdAt: new Date(),
+            },
+          });
+          console.log(`[optimize] Saved results to cache for ${cacheKey}`);
+        } catch (err) {
+          console.warn("[optimize] Cache write failed:", err);
+        }
       } catch (e) {
         send({ type: "error", error: (e as Error).message });
       } finally {
