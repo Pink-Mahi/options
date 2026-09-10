@@ -68,7 +68,7 @@ export async function POST(req: Request) {
           startDate,
           endDate,
           candleCount: candles.length,
-          candles: candles.slice(-5000), // Last 5000 candles to avoid huge payloads
+          candles: candles.slice(-50000), // Last 50000 candles to support multi-year daily EOD
           message: `Loaded ${candles.length} candles for ${symbol}`,
           warning: candles.length > 0 && (candles[0]?.timestamp?.length ?? 0) <= 10
             ? "Using daily EOD data (free tier). Intraday 1-minute candles require a ThetaData 'value' subscription."

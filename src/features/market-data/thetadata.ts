@@ -802,6 +802,11 @@ export async function fetchIntradayCandles(
   let usingFallback = false;
 
   async function fetchMonth(monthStart: string, monthEnd: string): Promise<IntradayCandle[]> {
+    // If we already know OHLC is 403, skip straight to EOD fallback
+    if (usingFallback) {
+      return fetchEOD(monthStart, monthEnd);
+    }
+
     const params = new URLSearchParams({
       symbol: sym,
       start_date: monthStart,
@@ -829,7 +834,11 @@ export async function fetchIntradayCandles(
       return [];
     }
 
-    // Fallback: use /stock/history/eod (free tier, daily EOD)
+    // First-time fallback: use /stock/history/eod (free tier, daily EOD)
+    return fetchEOD(monthStart, monthEnd);
+  }
+
+  async function fetchEOD(monthStart: string, monthEnd: string): Promise<IntradayCandle[]> {
     const eodParams = new URLSearchParams({
       symbol: sym,
       start_date: monthStart,
