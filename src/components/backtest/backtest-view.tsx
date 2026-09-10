@@ -344,10 +344,10 @@ export function BacktestView() {
     setRollOnAssignment(r.rollOnAssignment);
     // Pass overrides directly to run() — state updates are async and
     // won't be reflected when run() reads them synchronously.
-    // disableGtcTouch matches the optimizer, which can't use GTC touch
-    // simulation (too slow for 548 combinations). Without this, the full
-    // backtest would use real intraday data for buyback checks and produce
-    // different cycle counts.
+    // disableGtcTouch=true tells the backtest API to use the already-fetched
+    // EOD chain data for GTC touch checks (same as the optimizer) instead of
+    // making slow per-contract API calls. This ensures the full backtest
+    // matches the optimizer's results exactly.
     run({
       strategy: r.strategy as StrategyOption,
       deltaTarget: r.deltaTarget,

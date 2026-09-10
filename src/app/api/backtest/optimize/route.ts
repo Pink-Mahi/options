@@ -16,6 +16,33 @@ import { runBacktest, type BacktestStrategy } from "@/lib/calculations/backteste
 import { isThetaDataConfigured, prefetchEODChains, type ThetaDataEODQuote } from "@/features/market-data/thetadata";
 import { prisma } from "@/lib/database/prisma";
 
+/**
+ * Build a getDailyRows function from already-fetched EOD chain data.
+ * This uses real option high/low/bid/ask for GTC touch simulation
+ * without any additional API calls — instant lookup from the realData map.
+ */
+function buildGetDailyRowsFromRealData(
+  realData: Map<string, ThetaDataEODQuote[]>,
+): Parameters<typeof runBacktest>[1]["getDailyRows"] {
+  // Index: key = "CALL|380|2026-01-05" → Map<date, ThetaDataEODQuote>
+  const contractIndex = new Map<string, Map<string, ThetaDataEODQuote>>();
+  for (const quotes of realData.values()) {
+    for (const q of quotes) {
+      const key = `${q.right}|${q.strike}|${q.expiration}`;
+      let byDate = contractIndex.get(key);
+      if (!byDate) {
+        byDate = new Map();
+        contractIndex.set(key, byDate);
+      }
+      byDate.set(q.date, q);
+    }
+  }
+  return async (contract) => {
+    const key = `${contract.optionType}|${contract.strike}|${contract.expiration}`;
+    return contractIndex.get(key) ?? new Map();
+  };
+}
+
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
 
@@ -112,6 +139,7 @@ async function runOne(
         buyBackPct: cfg.buyBackPct > 0 ? cfg.buyBackPct / 100 : undefined,
         rollOnAssignment: cfg.rollOnAssignment,
         realData,
+        getDailyRows: realData ? buildGetDailyRowsFromRealData(realData) : undefined,
       },
       spyPoints,
     );

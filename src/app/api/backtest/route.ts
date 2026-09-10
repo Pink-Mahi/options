@@ -123,11 +123,32 @@ export async function POST(req: Request) {
           }
         }
 
-        // GTC touch simulation setup (disabled when matching optimizer results)
+        // GTC touch simulation setup
+        // When disableGtcTouch is true (from optimizer click), use the already-fetched
+        // EOD chain data for touch checks instead of making extra per-contract API calls.
+        // This ensures the full backtest matches the optimizer's results exactly.
         const disableGtcTouch = body.disableGtcTouch === true;
         let getDailyRows: Parameters<typeof runBacktest>[1]["getDailyRows"];
         let touchFetchCount = 0;
-        if (realData && !disableGtcTouch) {
+        if (realData && disableGtcTouch) {
+          // Build getDailyRows from already-fetched EOD data — instant, no API calls
+          const contractIndex = new Map<string, Map<string, ThetaDataEODQuote>>();
+          for (const quotes of realData.values()) {
+            for (const q of quotes) {
+              const key = `${q.right}|${q.strike}|${q.expiration}`;
+              let byDate = contractIndex.get(key);
+              if (!byDate) {
+                byDate = new Map();
+                contractIndex.set(key, byDate);
+              }
+              byDate.set(q.date, q);
+            }
+          }
+          getDailyRows = async (c) => {
+            const key = `${c.optionType}|${c.strike}|${c.expiration}`;
+            return contractIndex.get(key) ?? new Map();
+          };
+        } else if (realData && !disableGtcTouch) {
           const rowsCache = new Map<string, Map<string, ThetaDataEODQuote>>();
           const reqDelayMs = Number(process.env.THETADATA_REQ_DELAY_MS ?? 200);
           getDailyRows = async (c) => {
