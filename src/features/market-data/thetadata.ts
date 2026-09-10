@@ -338,6 +338,7 @@ export async function prefetchEODChains(
   const delayMs = Number(process.env.THETADATA_REQ_DELAY_MS ?? 200);
   const concurrency = Math.max(1, Number(process.env.THETADATA_CONCURRENCY ?? 1));
   let consecutiveFailures = 0;
+  let consecutive403s = 0;
   let done = cachedCount;
   let loggedEmptySample = false;
   const farFuture = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
@@ -380,6 +381,7 @@ export async function prefetchEODChains(
 
   async function fetchOneDate(date: string): Promise<void> {
     if (consecutiveFailures >= 3) return;
+    if (consecutive403s >= 5) return; // tier limit reached — skip remaining old dates
 
     const dateParam = formatDate(date);
     const params = new URLSearchParams({
@@ -396,12 +398,22 @@ export async function prefetchEODChains(
     try {
       const res = await fetch(url, { headers, cache: "no-store" });
       if (!res.ok) {
-        console.warn(`ThetaData fetch failed for ${sym} on ${date}: ${res.status}`);
+        if (res.status === 403) {
+          // 403 = tier limit (date too old for free tier) — not a connection issue
+          consecutive403s++;
+          cache.set(date, []);
+          if (consecutive403s === 1) {
+            console.warn(`[thetadata] ThetaData 403 for ${sym} on ${date} — likely outside free tier history limit. Skipping remaining old dates.`);
+          }
+        } else {
+          console.warn(`ThetaData fetch failed for ${sym} on ${date}: ${res.status}`);
+          consecutiveFailures++;
+        }
         cache.set(date, []);
-        consecutiveFailures++;
         return;
       }
       consecutiveFailures = 0;
+      consecutive403s = 0;
 
       const text = await res.text();
       let json: ThetaDataEODResponse;
@@ -471,6 +483,12 @@ export async function prefetchEODChains(
         );
         break;
       }
+      if (consecutive403s >= 5) {
+        console.warn(
+          `[thetadata] Skipping remaining ${datesToFetch.length - (done - cachedCount)} dates — ThetaData free tier history limit reached.`,
+        );
+        break;
+      }
 
       await fetchOneDate(date);
 
@@ -493,7 +511,7 @@ export async function prefetchEODChains(
     console.log(`[thetadata] Using concurrency=${concurrency} for ${datesToFetch.length} dates`);
     let idx = 0;
     async function worker() {
-      while (idx < datesToFetch.length && consecutiveFailures < 3) {
+      while (idx < datesToFetch.length && consecutiveFailures < 3 && consecutive403s < 5) {
         const date = datesToFetch[idx++]!;
         await fetchOneDate(date);
         done++;
