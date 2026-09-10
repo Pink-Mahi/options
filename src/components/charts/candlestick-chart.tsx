@@ -70,8 +70,16 @@ export function CandlestickChart({
     isUp: d.close >= d.open,
   }));
 
-  /* eslint-disable @typescript-eslint/no-explicit-any */
-  function renderCandle(props: any) {
+  interface CandleShapeProps {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    payload?: ChartRow;
+  }
+
+  function renderCandle(rawProps: unknown) {
+    const props = rawProps as CandleShapeProps;
     const { x, y, width, height, payload } = props;
     if (!payload || payload.high == null || payload.low == null) return <g />;
 
@@ -116,7 +124,6 @@ export function CandlestickChart({
       </g>
     );
   }
-  /* eslint-enable @typescript-eslint/no-explicit-any */
 
   return (
     <ResponsiveContainer width="100%" height={height}>
