@@ -20,7 +20,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { cn, formatCurrency, formatPercent } from "@/lib/utils";
 import type { BacktestResult } from "@/lib/calculations/backtester";
 import type { MarketContext } from "@/lib/calculations/market-context";
-import { Save, Bookmark, Trash2, ChevronDown, Sparkles } from "lucide-react";
+import { Save, Bookmark, Trash2, ChevronDown, Sparkles, Activity } from "lucide-react";
 
 interface OptimizeResult {
   strategy: string;
@@ -129,6 +129,13 @@ export function BacktestView() {
   const [optimizeGoal, setOptimizeGoal] = useState<string>("balanced");
   const [optSharesHeld, setOptSharesHeld] = useState<number>(0);
   const [optStartingCapital, setOptStartingCapital] = useState<number>(0);
+  const [backtestProgress, setBacktestProgress] = useState<{
+    message: string;
+    stage?: string;
+    done?: number;
+    total?: number;
+  } | null>(null);
+  const [backtestElapsed, setBacktestElapsed] = useState(0);
 
   useEffect(() => {
     fetch("/api/backtest-presets", { cache: "no-store" })
@@ -143,6 +150,13 @@ export function BacktestView() {
     const timer = setInterval(() => setOptimizeElapsed((s) => s + 1), 1000);
     return () => clearInterval(timer);
   }, [optimizing]);
+
+  useEffect(() => {
+    if (!loading) return;
+    setBacktestElapsed(0);
+    const timer = setInterval(() => setBacktestElapsed((s) => s + 1), 1000);
+    return () => clearInterval(timer);
+  }, [loading]);
 
   function savePreset() {
     const name = presetName.trim();
@@ -332,6 +346,7 @@ export function BacktestView() {
   async function run() {
     setLoading(true);
     setError(null);
+    setBacktestProgress({ message: "Starting…" });
     try {
       const res = await fetch("/api/backtest", {
         method: "POST",
@@ -354,19 +369,59 @@ export function BacktestView() {
         }),
         cache: "no-store",
       });
-      const data = await res.json();
       if (!res.ok) {
+        const data = await res.json().catch(() => ({}) as { error?: string });
         setError(data.error ?? "Backtest failed.");
         setResult(null);
-      } else {
-        setResult(data);
-        setComparisonResults([]);
+        return;
       }
+      if (!res.body) throw new Error("Streaming not supported by this browser.");
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let payload: Record<string, unknown> | null = null;
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          const evt = JSON.parse(line) as {
+            type: string;
+            message?: string;
+            stage?: string;
+            done?: number;
+            total?: number;
+            error?: string;
+          };
+          if (evt.type === "progress") {
+            setBacktestProgress({
+              message: evt.message ?? "Working…",
+              stage: evt.stage,
+              done: evt.done,
+              total: evt.total,
+            });
+          } else if (evt.type === "result") {
+            payload = evt;
+          } else if (evt.type === "error") {
+            throw new Error(evt.error ?? "Backtest failed.");
+          }
+        }
+      }
+
+      if (!payload) throw new Error("Backtest ended without results.");
+      setResult(payload as unknown as BacktestResponse);
+      setComparisonResults([]);
     } catch (e) {
       setError((e as Error).message);
       setResult(null);
     } finally {
       setLoading(false);
+      setBacktestProgress(null);
     }
   }
 
@@ -375,6 +430,7 @@ export function BacktestView() {
     setLoading(true);
     setError(null);
     setComparisonResults([]);
+    setBacktestProgress({ message: "Running comparison backtests…" });
     const variants = [
       { label: "30 DTE", dte: 30, buyBack: 0, delta: deltaTarget },
       { label: "45 DTE", dte: 45, buyBack: 0, delta: deltaTarget },
@@ -382,7 +438,13 @@ export function BacktestView() {
     ];
     try {
       const results: BacktestResponse[] = [];
-      for (const v of variants) {
+      for (let i = 0; i < variants.length; i++) {
+        const v = variants[i]!;
+        setBacktestProgress({
+          message: `Comparison ${i + 1}/${variants.length}: ${v.label}…`,
+          done: i,
+          total: variants.length,
+        });
         const res = await fetch("/api/backtest", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -400,8 +462,24 @@ export function BacktestView() {
           }),
           cache: "no-store",
         });
-        const data = await res.json();
-        if (res.ok) results.push({ ...data, _label: v.label } as BacktestResponse);
+        if (!res.ok || !res.body) continue;
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let payload: Record<string, unknown> | null = null;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const evt = JSON.parse(line) as { type: string; error?: string };
+            if (evt.type === "result") payload = evt;
+          }
+        }
+        if (payload) results.push({ ...(payload as unknown as BacktestResponse), _label: v.label });
       }
       setComparisonResults(results);
       if (results.length > 0) setResult(results[0]!);
@@ -409,6 +487,7 @@ export function BacktestView() {
       setError((e as Error).message);
     } finally {
       setLoading(false);
+      setBacktestProgress(null);
     }
   }
 
@@ -952,6 +1031,44 @@ export function BacktestView() {
       {error && (
         <Card className="border-destructive/50">
           <CardContent className="pt-6 text-sm text-destructive">{error}</CardContent>
+        </Card>
+      )}
+
+      {loading && backtestProgress && (
+        <Card className="border-primary/30 bg-primary/5">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <Activity className="h-5 w-5 shrink-0 animate-pulse text-primary" />
+              <div className="min-w-0 flex-1">
+                <p className="font-medium">{backtestProgress.message}</p>
+                <p className="text-sm text-muted-foreground">
+                  {backtestProgress.stage === "prefetch"
+                    ? "Downloading real historical option chains — this typically takes 1–3 minutes."
+                    : backtestProgress.stage === "backtest"
+                      ? "Simulating option cycles against historical data."
+                      : backtestProgress.stage === "done"
+                        ? "Finishing up…"
+                        : "Loading market data…"}{" "}
+                  Elapsed {Math.floor(backtestElapsed / 60)}:{String(backtestElapsed % 60).padStart(2, "0")}.
+                </p>
+                {backtestProgress.total != null && backtestProgress.total > 0 && (
+                  <div className="mt-2">
+                    <div className="h-2 overflow-hidden rounded-full bg-secondary">
+                      <div
+                        className="h-full rounded-full bg-primary transition-all duration-300"
+                        style={{
+                          width: `${Math.min(100, Math.round(((backtestProgress.done ?? 0) / backtestProgress.total) * 100))}%`,
+                        }}
+                      />
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {backtestProgress.done ?? 0} / {backtestProgress.total}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </CardContent>
         </Card>
       )}
 

@@ -18,166 +18,223 @@ const ALLOWED_RANGES = ["1y", "3y", "5y", "10y", "max"] as const;
 type HistRange = (typeof ALLOWED_RANGES)[number];
 
 export async function POST(req: Request) {
+  const user = await getSessionUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  let body: Record<string, unknown>;
   try {
-    const user = await getSessionUser();
-    if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
 
-    const body = await req.json();
-    const symbol = String(body.symbol ?? "").toUpperCase().trim();
-    if (!symbol) return NextResponse.json({ error: "symbol is required" }, { status: 400 });
+  const symbol = String(body.symbol ?? "").toUpperCase().trim();
+  if (!symbol) return NextResponse.json({ error: "symbol is required" }, { status: 400 });
 
-    const rawStrategy = String(body.strategy ?? "").toUpperCase();
-    if (!(ALLOWED_STRATEGIES as string[]).includes(rawStrategy)) {
-      return NextResponse.json(
-        { error: `strategy must be one of ${ALLOWED_STRATEGIES.join(", ")}` },
-        { status: 400 },
-      );
-    }
-    const strategy = rawStrategy as BacktestStrategy;
+  const rawStrategy = String(body.strategy ?? "").toUpperCase();
+  if (!(ALLOWED_STRATEGIES as string[]).includes(rawStrategy)) {
+    return NextResponse.json(
+      { error: `strategy must be one of ${ALLOWED_STRATEGIES.join(", ")}` },
+      { status: 400 },
+    );
+  }
+  const strategy = rawStrategy as BacktestStrategy;
 
-    const requestedRange = String(body.range ?? "3y").toLowerCase();
-    const range: HistRange = (ALLOWED_RANGES as readonly string[]).includes(requestedRange)
+  const requestedRange = String(body.range ?? "3y").toLowerCase();
+  const range: HistRange = (ALLOWED_RANGES as readonly string[]).includes(requestedRange)
       ? (requestedRange as HistRange)
       : "3y";
 
-    const [hist, quote, spyHist] = await Promise.all([
-      getHistoricalPrices({ symbol, range }),
-      getQuote({ symbol }),
-      getHistoricalPrices({ symbol: "SPY", range }).catch(() => null),
-    ]);
-
-    const spot = quote.data.price;
-    const contracts = Number(body.contracts) > 0 ? Number(body.contracts) : 1;
-    const shares = strategy === "CASH_SECURED_PUT" ? 0 : contracts * 100;
-    const startingCapital =
-      Number(body.startingCapital) > 0
-        ? Number(body.startingCapital)
-        : Math.max(spot * contracts * 100, 1);
-
-    const dteTarget = Number(body.dteTarget) > 0 ? Number(body.dteTarget) : 45;
-    const tradingDaysPerCycle = Math.round(dteTarget * 252 / 365);
-
-    // Pre-fetch real EOD option chains from ThetaData if terminal is configured.
-    // The backtester looks up real bid/ask by date, falling back to BS model
-    // for any dates not in the map.
-    let realData: Map<string, ThetaDataEODQuote[]> | undefined;
-    if (isThetaDataConfigured()) {
-      // Fetch EVERY trading day from index 30 onward — the backtester's
-      // actual cycle starts depend on buyback timing (idx = effCloseIdx),
-      // not a fixed step, so we need all dates to guarantee coverage.
-      const datesToFetch = hist.data.points.slice(30).map((p) => p.date);
-      if (datesToFetch.length > 0) {
-        console.log(`[backtest] Pre-fetching ${datesToFetch.length} EOD chains from ThetaData...`);
+  // NDJSON stream: one JSON event per line. Progress events flow to the UI
+  // while the backtest runs; the final line carries the full result payload.
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: Record<string, unknown>) => {
         try {
-          realData = await prefetchEODChains(symbol, datesToFetch);
-          const withData = Array.from(realData.values()).filter((q) => q.length > 0).length;
-          console.log(`[backtest] ThetaData prefetch complete: ${withData}/${datesToFetch.length} dates returned real quotes`);
-          if (withData === 0) {
-            console.warn("[backtest] ThetaData terminal is not reachable or returned no data — all cycles will use BS model. Check container logs for terminal startup.");
-            realData = undefined;
-          }
-        } catch (err) {
-          console.warn("[backtest] ThetaData prefetch failed, using BS model:", err);
-        }
-      }
-    }
-
-    // GTC touch simulation: the backtester asks for daily rows (bid/ask/
-    // high/low/close) of each contract it sells, and fills resting orders
-    // the day the price trades through the limit. Cached per contract and
-    // rate-limited like the chain prefetch.
-    let getDailyRows: Parameters<typeof runBacktest>[1]["getDailyRows"];
-    let touchFetchCount = 0;
-    if (realData) {
-      const rowsCache = new Map<string, Map<string, ThetaDataEODQuote>>();
-      const reqDelayMs = Number(process.env.THETADATA_REQ_DELAY_MS ?? 200);
-      getDailyRows = async (c) => {
-        const key = `${c.optionType}|${c.strike}|${c.expiration}`;
-        const cached = rowsCache.get(key);
-        if (cached) return cached;
-        touchFetchCount++;
-        if (reqDelayMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, reqDelayMs));
-        }
-        try {
-          const rows = await fetchContractDailyRows(
-            symbol,
-            c.expiration,
-            c.strike,
-            c.optionType,
-            c.from,
-            c.to,
-          );
-          rowsCache.set(key, rows);
-          return rows;
+          controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
         } catch {
-          const empty = new Map<string, ThetaDataEODQuote>();
-          rowsCache.set(key, empty);
-          return empty;
+          // Client disconnected mid-run — keep computing, writes are best-effort.
         }
       };
-    }
 
-    const result = await runBacktest(
-      hist.data.points,
-      {
-        strategy,
-        symbol,
-        deltaTarget: Number(body.deltaTarget) > 0 ? Number(body.deltaTarget) : 0.3,
-        dteTarget,
-        contracts,
-        riskFreeRate: Number(body.riskFreeRate) > 0 ? Number(body.riskFreeRate) : 0.05,
-        startingCapital,
-        shares,
-        strikeInterval: spot >= 200 ? 5 : spot >= 50 ? 2.5 : 1,
-        fillAssumption: body.fillAssumption === "mid" ? "mid" : "bid",
-        dividendYield: Number(body.dividendYield) >= 0 ? Number(body.dividendYield) : undefined,
-        ivRiskPremium: Number(body.ivRiskPremium) > 0 ? Number(body.ivRiskPremium) : 1.15,
-        ivSkewEnabled: body.ivSkewEnabled !== false,
-        termStructureEnabled: body.termStructureEnabled !== false,
-        neverSellCallBelowCostBasis: body.neverSellCallBelowCostBasis === true,
-        minCallPremiumYieldPct:
-          Number(body.minCallPremiumYieldPct) > 0 ? Number(body.minCallPremiumYieldPct) : undefined,
-        minPutPremiumYieldPct:
-          Number(body.minPutPremiumYieldPct) > 0 ? Number(body.minPutPremiumYieldPct) : undefined,
-        averageDownWithPremium: body.averageDownWithPremium === true,
-        buyBackPct:
-          Number(body.buyBackPct) > 0 && Number(body.buyBackPct) < 1
-            ? Number(body.buyBackPct)
-            : undefined,
-        rollOnAssignment: body.rollOnAssignment === true,
-        realData,
-        getDailyRows,
-      },
-      spyHist?.data.points,
-    );
+      try {
+        send({ type: "progress", message: "Loading price history…", stage: "fetch" });
 
-    if (getDailyRows) {
-      console.log(
-        `[backtest] GTC touch simulation: ${touchFetchCount} contract histories fetched for ${result.touchCycles} cycles (${result.touchExitCount} exit + ${result.touchEntryCount} entry intraday fills)`,
-      );
-    }
+        const [hist, quote, spyHist] = await Promise.all([
+          getHistoricalPrices({ symbol, range }),
+          getQuote({ symbol }),
+          getHistoricalPrices({ symbol: "SPY", range }).catch(() => null),
+        ]);
 
-    return NextResponse.json({
-      ...result,
-      startingCapital,
-      underlyingPrice: spot,
-      dataSourceSummary: {
-        realDataCycles: result.realDataCycles,
-        bsModelCycles: result.bsModelCycles,
-        totalCycles: result.totalCycles,
-        usingRealData: result.realDataCycles > 0,
-      },
-      modelCaveat: isThetaDataConfigured()
-        ? result.realDataCycles > 0
-          ? `Option premiums use real historical bid/ask from ThetaData for ${result.realDataCycles} of ${result.totalCycles} cycles. The remaining ${result.bsModelCycles} cycles use Black-Scholes (IV risk premium + skew + term structure) as fallback. Results are more realistic but still not an achievable track record.` +
-            (result.touchCycles > 0
-              ? ` GTC orders in ${result.touchCycles} cycles were simulated against daily highs/lows (intraday touches): ${result.touchExitCount} buy-backs and ${result.touchEntryCount} entries filled on a touch.`
-              : "")
-          : "ThetaData terminal is configured but no real data was available for the requested dates. All cycles use Black-Scholes model. Check that the terminal is running and the date range is within your subscription tier."
-        : "Option premiums are modeled with Black-Scholes using trailing 30-day realized volatility with IV risk premium (1.15x), equity skew, and term structure. Not historical option quotes. Real fills would differ, and this is not an achievable track record.",
-    });
-  } catch (e) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
-  }
+        const spot = quote.data.price;
+        const contracts = Number(body.contracts) > 0 ? Number(body.contracts) : 1;
+        const shares = strategy === "CASH_SECURED_PUT" ? 0 : contracts * 100;
+        const startingCapital =
+          Number(body.startingCapital) > 0
+            ? Number(body.startingCapital)
+            : Math.max(spot * contracts * 100, 1);
+
+        const dteTarget = Number(body.dteTarget) > 0 ? Number(body.dteTarget) : 45;
+        const tradingDaysPerCycle = Math.round(dteTarget * 252 / 365);
+
+        // Pre-fetch real EOD option chains from ThetaData if terminal is configured.
+        let realData: Map<string, ThetaDataEODQuote[]> | undefined;
+        if (isThetaDataConfigured()) {
+          const datesToFetch = hist.data.points.slice(30).map((p) => p.date);
+          if (datesToFetch.length > 0) {
+            send({
+              type: "progress",
+              message: `Pre-fetching ${datesToFetch.length} EOD option chains from ThetaData…`,
+              stage: "prefetch",
+              done: 0,
+              total: datesToFetch.length,
+            });
+            console.log(`[backtest] Pre-fetching ${datesToFetch.length} EOD chains from ThetaData...`);
+            try {
+              realData = await prefetchEODChains(symbol, datesToFetch);
+              const withData = Array.from(realData.values()).filter((q) => q.length > 0).length;
+              console.log(`[backtest] ThetaData prefetch complete: ${withData}/${datesToFetch.length} dates returned real quotes`);
+              send({
+                type: "progress",
+                message: `ThetaData prefetch complete: ${withData}/${datesToFetch.length} dates with real quotes`,
+                stage: "prefetch",
+                done: datesToFetch.length,
+                total: datesToFetch.length,
+              });
+              if (withData === 0) {
+                console.warn("[backtest] ThetaData terminal is not reachable or returned no data — all cycles will use BS model. Check container logs for terminal startup.");
+                realData = undefined;
+              }
+            } catch (err) {
+              console.warn("[backtest] ThetaData prefetch failed, using BS model:", err);
+              send({ type: "progress", message: "ThetaData prefetch failed — falling back to BS model", stage: "prefetch" });
+            }
+          }
+        }
+
+        // GTC touch simulation setup
+        let getDailyRows: Parameters<typeof runBacktest>[1]["getDailyRows"];
+        let touchFetchCount = 0;
+        if (realData) {
+          const rowsCache = new Map<string, Map<string, ThetaDataEODQuote>>();
+          const reqDelayMs = Number(process.env.THETADATA_REQ_DELAY_MS ?? 200);
+          getDailyRows = async (c) => {
+            const key = `${c.optionType}|${c.strike}|${c.expiration}`;
+            const cached = rowsCache.get(key);
+            if (cached) return cached;
+            touchFetchCount++;
+            if (reqDelayMs > 0) {
+              await new Promise((resolve) => setTimeout(resolve, reqDelayMs));
+            }
+            try {
+              const rows = await fetchContractDailyRows(
+                symbol,
+                c.expiration,
+                c.strike,
+                c.optionType,
+                c.from,
+                c.to,
+              );
+              rowsCache.set(key, rows);
+              return rows;
+            } catch {
+              const empty = new Map<string, ThetaDataEODQuote>();
+              rowsCache.set(key, empty);
+              return empty;
+            }
+          };
+        }
+
+        const totalCyclesEstimate = Math.max(1, Math.floor((hist.data.points.length - 30) / tradingDaysPerCycle));
+        send({
+          type: "progress",
+          message: `Running backtest — ~${totalCyclesEstimate} cycles over ${hist.data.points.length} trading days…`,
+          stage: "backtest",
+          done: 0,
+          total: totalCyclesEstimate,
+        });
+
+        const result = await runBacktest(
+          hist.data.points,
+          {
+            strategy,
+            symbol,
+            deltaTarget: Number(body.deltaTarget) > 0 ? Number(body.deltaTarget) : 0.3,
+            dteTarget,
+            contracts,
+            riskFreeRate: Number(body.riskFreeRate) > 0 ? Number(body.riskFreeRate) : 0.05,
+            startingCapital,
+            shares,
+            strikeInterval: spot >= 200 ? 5 : spot >= 50 ? 2.5 : 1,
+            fillAssumption: body.fillAssumption === "mid" ? "mid" : "bid",
+            dividendYield: Number(body.dividendYield) >= 0 ? Number(body.dividendYield) : undefined,
+            ivRiskPremium: Number(body.ivRiskPremium) > 0 ? Number(body.ivRiskPremium) : 1.15,
+            ivSkewEnabled: body.ivSkewEnabled !== false,
+            termStructureEnabled: body.termStructureEnabled !== false,
+            neverSellCallBelowCostBasis: body.neverSellCallBelowCostBasis === true,
+            minCallPremiumYieldPct:
+              Number(body.minCallPremiumYieldPct) > 0 ? Number(body.minCallPremiumYieldPct) : undefined,
+            minPutPremiumYieldPct:
+              Number(body.minPutPremiumYieldPct) > 0 ? Number(body.minPutPremiumYieldPct) : undefined,
+            averageDownWithPremium: body.averageDownWithPremium === true,
+            buyBackPct:
+              Number(body.buyBackPct) > 0 && Number(body.buyBackPct) < 1
+                ? Number(body.buyBackPct)
+                : undefined,
+            rollOnAssignment: body.rollOnAssignment === true,
+            realData,
+            getDailyRows,
+          },
+          spyHist?.data.points,
+        );
+
+        if (getDailyRows) {
+          console.log(
+            `[backtest] GTC touch simulation: ${touchFetchCount} contract histories fetched for ${result.touchCycles} cycles (${result.touchExitCount} exit + ${result.touchEntryCount} entry intraday fills)`,
+          );
+        }
+
+        send({
+          type: "progress",
+          message: `Backtest complete — ${result.totalCycles} cycles`,
+          stage: "done",
+          done: result.totalCycles,
+          total: result.totalCycles,
+        });
+
+        send({
+          type: "result",
+          ...result,
+          startingCapital,
+          underlyingPrice: spot,
+          dataSourceSummary: {
+            realDataCycles: result.realDataCycles,
+            bsModelCycles: result.bsModelCycles,
+            totalCycles: result.totalCycles,
+            usingRealData: result.realDataCycles > 0,
+          },
+          modelCaveat: isThetaDataConfigured()
+            ? result.realDataCycles > 0
+              ? `Option premiums use real historical bid/ask from ThetaData for ${result.realDataCycles} of ${result.totalCycles} cycles. The remaining ${result.bsModelCycles} cycles use Black-Scholes (IV risk premium + skew + term structure) as fallback. Results are more realistic but still not an achievable track record.` +
+                (result.touchCycles > 0
+                  ? ` GTC orders in ${result.touchCycles} cycles were simulated against daily highs/lows (intraday touches): ${result.touchExitCount} buy-backs and ${result.touchEntryCount} entries filled on a touch.`
+                  : "")
+              : "ThetaData terminal is configured but no real data was available for the requested dates. All cycles use Black-Scholes model. Check that the terminal is running and the date range is within your subscription tier."
+            : "Option premiums are modeled with Black-Scholes using trailing 30-day realized volatility with IV risk premium (1.15x), equity skew, and term structure. Not historical option quotes. Real fills would differ, and this is not an achievable track record.",
+        });
+      } catch (e) {
+        send({ type: "error", error: (e as Error).message });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "application/x-ndjson",
+      "Cache-Control": "no-cache",
+    },
+  });
 }
