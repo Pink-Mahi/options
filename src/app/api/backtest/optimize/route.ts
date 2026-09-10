@@ -114,6 +114,7 @@ async function runOne(
   },
   spyPoints?: Parameters<typeof runBacktest>[2],
   realData?: Map<string, ThetaDataEODQuote[]>,
+  getDailyRows?: Parameters<typeof runBacktest>[1]["getDailyRows"],
 ): Promise<OptimizeResult | null> {
   try {
     const result = await runBacktest(
@@ -139,7 +140,7 @@ async function runOne(
         buyBackPct: cfg.buyBackPct > 0 ? cfg.buyBackPct / 100 : undefined,
         rollOnAssignment: cfg.rollOnAssignment,
         realData,
-        getDailyRows: realData ? buildGetDailyRowsFromRealData(realData) : undefined,
+        getDailyRows,
       },
       spyPoints,
     );
@@ -291,7 +292,7 @@ export async function POST(req: Request) {
 
       try {
         // --- Check optimizer result cache ---
-        const cacheKey = `optimize:${symbol}:${range}:${sweepStrategies.join(",")}:${dteMin}:${dteMax}:${riskTolerance}:${goal}:${contracts}:${Number(body.sharesHeld) > 0 ? Number(body.sharesHeld) : 0}`;
+        const cacheKey = `optimize:v3:${symbol}:${range}:${sweepStrategies.join(",")}:${dteMin}:${dteMax}:${riskTolerance}:${goal}:${contracts}:${Number(body.sharesHeld) > 0 ? Number(body.sharesHeld) : 0}`;
         try {
           const cached = await prisma.optimizerResultCache.findUnique({
             where: { cacheKey },
@@ -399,6 +400,9 @@ export async function POST(req: Request) {
           }
         }
 
+        // Build GTC touch lookup once from real EOD data (instant, no API calls)
+        const sharedGetDailyRows = realData ? buildGetDailyRowsFromRealData(realData) : undefined;
+
         // ---- Phase 1: Coarse sweep (strategy × delta × DTE × buyback) ----
         const phase1Results: OptimizeResult[] = [];
         let phase1Done = 0;
@@ -421,7 +425,7 @@ export async function POST(req: Request) {
                   neverBelowCost: false,
                   averageDown: false,
                   rollOnAssignment: false,
-                }, spyPoints, realData);
+                }, spyPoints, realData, sharedGetDailyRows);
                 if (r) phase1Results.push(r);
                 phase1Done++;
                 // Yield to the event loop periodically so streamed progress
@@ -476,7 +480,7 @@ export async function POST(req: Request) {
                 neverBelowCost: bools.neverBelowCost,
                 averageDown: bools.averageDown,
                 rollOnAssignment: bools.rollOnAssignment,
-              }, spyPoints, realData);
+              }, spyPoints, realData, sharedGetDailyRows);
               if (r) allResults.push(r);
               phase2Done++;
               if (phase2Done % 25 === 0 || phase2Done === phase2Total) {
