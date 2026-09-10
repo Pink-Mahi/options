@@ -342,7 +342,19 @@ export function BacktestView() {
     setNeverBelowCost(r.neverBelowCost);
     setAverageDown(r.averageDown);
     setRollOnAssignment(r.rollOnAssignment);
-    run();
+    // Pass overrides directly to run() — state updates are async and
+    // won't be reflected when run() reads them synchronously.
+    run({
+      strategy: r.strategy as StrategyOption,
+      deltaTarget: r.deltaTarget,
+      dteTarget: r.dte,
+      buyBackPct: r.buyBackPct,
+      minCallYieldPct: r.minCallYieldPct > 0 ? r.minCallYieldPct * 100 : 0,
+      minPutYieldPct: r.minPutYieldPct > 0 ? r.minPutYieldPct * 100 : 0,
+      neverBelowCost: r.neverBelowCost,
+      averageDown: r.averageDown,
+      rollOnAssignment: r.rollOnAssignment,
+    });
   }
 
   async function preWarmCache() {
@@ -384,7 +396,29 @@ export function BacktestView() {
     }
   }
 
-  async function run() {
+  async function run(overrides?: {
+    strategy?: StrategyOption;
+    deltaTarget?: number;
+    dteTarget?: number;
+    buyBackPct?: number;
+    minCallYieldPct?: number;
+    minPutYieldPct?: number;
+    neverBelowCost?: boolean;
+    averageDown?: boolean;
+    rollOnAssignment?: boolean;
+  }) {
+    // Guard against MouseEvent passed by onClick={run}
+    const o = overrides && "strategy" in overrides ? overrides : undefined;
+    const effStrategy = o?.strategy ?? strategy;
+    const effDelta = o?.deltaTarget ?? deltaTarget;
+    const effDte = o?.dteTarget ?? dteTarget;
+    const effBuyBack = o?.buyBackPct ?? buyBackPct;
+    const effMinCall = o?.minCallYieldPct ?? minYieldPct;
+    const effMinPut = o?.minPutYieldPct ?? minPutYieldPct;
+    const effNeverBelow = o?.neverBelowCost ?? neverBelowCost;
+    const effAvgDown = o?.averageDown ?? averageDown;
+    const effRoll = o?.rollOnAssignment ?? rollOnAssignment;
+
     setLoading(true);
     setError(null);
     setBacktestProgress({ message: "Starting…" });
@@ -394,19 +428,19 @@ export function BacktestView() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           symbol,
-          strategy,
-          deltaTarget,
-          dteTarget,
+          strategy: effStrategy,
+          deltaTarget: effDelta,
+          dteTarget: effDte,
           range,
-          neverSellCallBelowCostBasis: neverBelowCost,
-          minCallPremiumYieldPct: minYieldPct > 0 ? minYieldPct / 100 : undefined,
+          neverSellCallBelowCostBasis: effNeverBelow,
+          minCallPremiumYieldPct: effMinCall > 0 ? effMinCall / 100 : undefined,
           contracts,
-          averageDownWithPremium: averageDown,
+          averageDownWithPremium: effAvgDown,
           fillAssumption,
           startingCapital: startingCapital > 0 ? startingCapital : undefined,
-          buyBackPct: buyBackPct > 0 ? buyBackPct / 100 : undefined,
-          minPutPremiumYieldPct: minPutYieldPct > 0 ? minPutYieldPct / 100 : undefined,
-          rollOnAssignment,
+          buyBackPct: effBuyBack > 0 ? effBuyBack / 100 : undefined,
+          minPutPremiumYieldPct: effMinPut > 0 ? effMinPut / 100 : undefined,
+          rollOnAssignment: effRoll,
         }),
         cache: "no-store",
       });
@@ -756,7 +790,7 @@ export function BacktestView() {
             </div>
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
-            <Button onClick={run} disabled={loading || !symbol}>
+            <Button onClick={() => run()} disabled={loading || !symbol}>
               {loading ? "Running…" : "Run backtest"}
             </Button>
             <Button variant="outline" onClick={runComparison} disabled={loading || !symbol}>
