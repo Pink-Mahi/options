@@ -333,7 +333,31 @@ export async function prefetchEODChains(
   let consecutiveFailures = 0;
   let done = cachedCount;
   let loggedEmptySample = false;
-  const fetchedRows: { cacheKey: string; payload: ThetaDataEODQuote[] }[] = [];
+  const farFuture = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+  const SAVE_BATCH = 10; // Save to DB every N fetched dates (pipelined with fetch)
+  let pendingSave: { cacheKey: string; payload: ThetaDataEODQuote[] }[] = [];
+  let totalSaved = 0;
+
+  async function flushSave() {
+    if (pendingSave.length === 0) return;
+    const batch = pendingSave;
+    pendingSave = [];
+    try {
+      await prisma.marketDataCache.createMany({
+        data: batch.map((row) => ({
+          cacheKey: row.cacheKey,
+          kind: "eod_chain",
+          symbol: sym,
+          payload: row.payload as unknown as import("@prisma/client").Prisma.InputJsonValue,
+          expiresAt: farFuture,
+        })),
+        skipDuplicates: true,
+      });
+      totalSaved += batch.length;
+    } catch (err) {
+      console.warn(`[thetadata] DB cache write failed for ${sym} (batch of ${batch.length}):`, err);
+    }
+  }
 
   for (const date of datesToFetch) {
     if (consecutiveFailures >= 3) {
@@ -422,7 +446,7 @@ export async function prefetchEODChains(
       cache.set(date, quotes);
       // Queue for DB persistence (only save non-empty to avoid caching failures)
       if (quotes.length > 0) {
-        fetchedRows.push({ cacheKey: `eod_chain:${sym}:${date}`, payload: quotes });
+        pendingSave.push({ cacheKey: `eod_chain:${sym}:${date}`, payload: quotes });
       }
     } catch (err) {
       console.warn(`ThetaData fetch error for ${sym} on ${date}: ${(err as Error).message}`);
@@ -438,33 +462,21 @@ export async function prefetchEODChains(
     done++;
     onProgress?.(done, dates.length);
     if (done % 20 === 0 || done === dates.length) {
-      console.log(`[thetadata] Prefetch progress: ${done}/${dates.length} (${cachedCount} from cache, ${done - cachedCount} fetched)...`);
+      console.log(`[thetadata] Prefetch progress: ${done}/${dates.length} (${cachedCount} from cache, ${done - cachedCount} fetched, ${totalSaved} saved to DB)...`);
+    }
+
+    // Pipeline: flush pending DB saves every SAVE_BATCH dates so writes
+    // overlap with the next ThetaData fetch (the rate-limit delay gives
+    // the DB write time to complete).
+    if (pendingSave.length >= SAVE_BATCH) {
+      await flushSave();
     }
   }
 
-  // --- Phase 3: Persist newly fetched chains to the DB (bulk insert) ---
-  if (fetchedRows.length > 0) {
-    const farFuture = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000); // 1 year TTL
-    try {
-      // createMany with skipDuplicates is a single bulk INSERT — orders of
-      // magnitude faster than 721 individual upserts (each of which does a
-      // SELECT + INSERT). If a row already exists from a concurrent run,
-      // skipDuplicates silently ignores it.
-      await prisma.marketDataCache.createMany({
-        data: fetchedRows.map((row) => ({
-          cacheKey: row.cacheKey,
-          kind: "eod_chain",
-          symbol: sym,
-          payload: row.payload as unknown as import("@prisma/client").Prisma.InputJsonValue,
-          expiresAt: farFuture,
-        })),
-        skipDuplicates: true,
-      });
-      console.log(`[thetadata] Saved ${fetchedRows.length} new EOD chains to DB cache for ${sym}`);
-    } catch (err) {
-      console.warn(`[thetadata] DB cache write failed for ${sym}:`, err);
-      // Non-fatal — the backtest still works with the in-memory cache
-    }
+  // Flush any remaining pending saves
+  await flushSave();
+  if (totalSaved > 0) {
+    console.log(`[thetadata] Saved ${totalSaved} new EOD chains to DB cache for ${sym}`);
   }
 
   return cache;
