@@ -314,7 +314,7 @@ export async function POST(req: Request) {
                 symbol,
                 datesToFetch,
                 (done, total) =>
-                  send({ type: "progress", stage: "prefetch", message: "Fetching historical option chains from ThetaData", done, total }),
+                  send({ type: "progress", stage: "prefetch", message: done < total ? `Loading EOD option chains — ${done}/${total} dates processed` : `Saving ${total} EOD chains to DB cache…`, done, total }),
               );
               const withData = Array.from(realData.values()).filter((q) => q.length > 0).length;
               console.log(`[optimize] ThetaData prefetch complete: ${withData}/${datesToFetch.length} dates returned real quotes`);
