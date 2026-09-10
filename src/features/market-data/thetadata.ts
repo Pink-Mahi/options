@@ -780,7 +780,7 @@ export async function fetchIntradayCandles(
           high: c.high,
           low: c.low,
           close: c.close,
-          volume: BigInt(c.volume),
+          volume: BigInt(Math.max(0, Math.floor(c.volume)) || 0),
           session: c.session,
         })),
         skipDuplicates: true,
