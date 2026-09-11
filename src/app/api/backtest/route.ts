@@ -71,7 +71,7 @@ export async function POST(req: Request) {
         const contracts = Number(body.contracts) > 0 ? Number(body.contracts) : 1;
         const shares = strategy === "CASH_SECURED_PUT" ? 0
           : strategy === "RATIO_WHEEL" ? (Number(body.shares) >= 0 ? Number(body.shares) : contracts * 100)
-          : contracts * 100;
+          : Number(body.shares) > 0 ? Number(body.shares) : contracts * 100;
         const startingCapital =
           Number(body.startingCapital) > 0
             ? Number(body.startingCapital)

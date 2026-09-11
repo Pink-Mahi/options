@@ -132,6 +132,7 @@ export function BacktestView() {
   // Phase 7: Ratio wheel config
   const [putCallRatio, setPutCallRatio] = useState(0.5);
   const [callDeltaAfterAssignment, setCallDeltaAfterAssignment] = useState(0.50);
+  const [sharesHeld, setSharesHeld] = useState(0); // 0 = auto (contracts * 100)
   const [result, setResult] = useState<BacktestResponse | null>(null);
   const [comparisonResults, setComparisonResults] = useState<BacktestResponse[]>([]);
   const [loading, setLoading] = useState(false);
@@ -475,6 +476,7 @@ export function BacktestView() {
           buyBackPct: effBuyBack > 0 ? effBuyBack / 100 : undefined,
           minPutPremiumYieldPct: effMinPut > 0 ? effMinPut / 100 : undefined,
           rollOnAssignment: effRoll,
+          shares: sharesHeld > 0 ? sharesHeld : undefined,
           // Phase 7: Ratio wheel
           putCallRatio: strategy === "RATIO_WHEEL" ? putCallRatio : undefined,
           callDeltaAfterAssignment: strategy === "RATIO_WHEEL" ? callDeltaAfterAssignment : undefined,
@@ -826,6 +828,61 @@ export function BacktestView() {
                 <option value="10y">10 years</option>
               </select>
             </div>
+            {/* Shares owned — needed for ratio wheel and covered call */}
+            {(strategy === "RATIO_WHEEL" || strategy === "COVERED_CALL") && (
+              <div className="space-y-1.5">
+                <Label htmlFor="bt-shares">Shares owned</Label>
+                <Input
+                  id="bt-shares"
+                  type="number"
+                  step="100"
+                  min="0"
+                  value={sharesHeld || ""}
+                  onChange={(e) => setSharesHeld(Number(e.target.value))}
+                  placeholder={`${contracts * 100} (auto)`}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {strategy === "RATIO_WHEEL"
+                    ? "Starting shares for covered calls. Puts use cash collateral."
+                    : "Shares to sell covered calls against."}
+                </p>
+              </div>
+            )}
+            {/* Phase 7: Ratio wheel config */}
+            {strategy === "RATIO_WHEEL" && (
+              <>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Put:call ratio ({(putCallRatio * 100).toFixed(0)}% puts)</Label>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={0.9}
+                    step={0.05}
+                    value={putCallRatio}
+                    onChange={(e) => setPutCallRatio(Number(e.target.value))}
+                    className="w-full"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    50% = equal puts and calls. 70% = more puts (aggressive averaging down).
+                  </p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">Call delta after assignment</Label>
+                  <Input
+                    type="number"
+                    min={0.20}
+                    max={0.80}
+                    step={0.05}
+                    value={callDeltaAfterAssignment}
+                    onChange={(e) => setCallDeltaAfterAssignment(Number(e.target.value))}
+                    className="h-9"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Higher delta = more likely to be called away (recover shares faster). Default: 0.50.
+                  </p>
+                </div>
+              </>
+            )}
           </div>
           <div className="mt-4 flex flex-wrap gap-2">
             <Button onClick={() => run()} disabled={loading || !symbol}>
@@ -1152,50 +1209,6 @@ export function BacktestView() {
               </span>
             </span>
           </label>
-
-          {/* Phase 7: Ratio wheel config */}
-          {strategy === "RATIO_WHEEL" && (
-            <div className="mt-3 rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-3">
-              <p className="text-sm font-medium text-primary">Ratio wheel settings</p>
-              <p className="text-xs text-muted-foreground">
-                Sells both puts and calls simultaneously each cycle, sized to maintain the target ratio.
-                After a put is assigned, the call delta increases to be more aggressive about being called
-                away — this recovers shares at a higher strike after the put lowered your cost basis.
-              </p>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="space-y-1">
-                  <Label className="text-xs">Put:call ratio ({(putCallRatio * 100).toFixed(0)}% puts)</Label>
-                  <input
-                    type="range"
-                    min={0.1}
-                    max={0.9}
-                    step={0.05}
-                    value={putCallRatio}
-                    onChange={(e) => setPutCallRatio(Number(e.target.value))}
-                    className="w-full"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    50% = equal puts and calls. 70% = more puts (aggressive averaging down).
-                  </p>
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-xs">Call delta after assignment</Label>
-                  <Input
-                    type="number"
-                    min={0.20}
-                    max={0.80}
-                    step={0.05}
-                    value={callDeltaAfterAssignment}
-                    onChange={(e) => setCallDeltaAfterAssignment(Number(e.target.value))}
-                    className="h-8 text-xs"
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Higher delta = more likely to be called away (recover shares faster). Default: 0.50.
-                  </p>
-                </div>
-              </div>
-            </div>
-          )}
         </CardContent>
       </Card>
 
