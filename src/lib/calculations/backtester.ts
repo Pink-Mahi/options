@@ -1384,10 +1384,9 @@ export async function runBacktest(
     let dailyRowsForMtm: Map<string, ThetaDataEODQuote> | undefined;
 
     if (filled && buyBackPct > 0 && buyBackPct < 1) {
-      // buyBackPct is the fraction of the sale price to buy back at.
-      // e.g. 0.20 = buy back when option is worth 20% of sale price (80% profit).
-      // 0.50 = buy back at 50% of sale price (50% profit).
-      const trigger = fillPrice * buyBackPct;
+      // buyBackPct is the profit fraction to keep (e.g. 0.80 = keep 80% profit,
+      // buy back when option is worth 20% of sale price). 0.50 = 50% profit.
+      const trigger = fillPrice * (1 - buyBackPct);
       if (config.getDailyRows && dataSource === "REAL" && realExpiration) {
         try {
           const fetched = await config.getDailyRows({

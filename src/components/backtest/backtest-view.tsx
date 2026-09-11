@@ -2009,7 +2009,7 @@ export function BacktestView() {
                   {buyBackPct > 0 ? (
                     <>
                       <p className="text-muted-foreground">
-                        Place a GTC buyback order at <strong>{buyBackPct.toFixed(0)}%</strong> of the sale price.
+                        Place a GTC buyback order to keep <strong>{buyBackPct.toFixed(0)}%</strong> of the premium.
                         This means: sell for $5.00 → buy back at $5.00 × {(1 - buyBackPct / 100).toFixed(2)} = <strong>${(5 * (1 - buyBackPct / 100)).toFixed(2)}</strong>.
                         You keep <strong>{buyBackPct.toFixed(0)}%</strong> of the premium.
                       </p>
