@@ -37,6 +37,8 @@ interface OptimizeResult {
   buyHoldReturn: number;
   outperformance: number;
   sharpeRatio: number | null;
+  sortinoRatio: number | null;
+  calmarRatio: number | null;
   maxDrawdown: number;
   totalPremiumIncome: number;
   winRate: number;
@@ -48,6 +50,28 @@ interface OptimizeResult {
   bsModelCycles: number;
   compositeScore: number;
   avgMonthlyIncome: number;
+  interestIncome: number;
+  totalCommissions: number;
+  returnOnCapitalDeployed: number | null;
+  capitalUtilization: number;
+  monthlyIncomeStdDev: number;
+  zeroIncomeMonths: number;
+  worstCyclePnl: number;
+  worstMonthPnl: number;
+  daysUnderwater: number;
+  deflatedSharpe: number | null;
+  deflatedSharpeVerdict: string | null;
+  trials: number;
+  /** Phase 4: walk-forward OOS annualized return. */
+  oosAnnualizedReturn?: number;
+  /** Phase 4: IS/OOS return gap (large positive = overfitting). */
+  isOosGap?: number;
+  /** Phase 4: OOS consistency (fraction of positive folds). */
+  oosConsistency?: number;
+  /** Phase 4: parameter stability score (0–1). */
+  stabilityScore?: number;
+  /** Phase 4: composite robustness score. */
+  robustnessScore?: number;
 }
 
 interface PresetData {
@@ -1219,9 +1243,21 @@ export function BacktestView() {
                   {optimizeMeta.realDataUsed && (
                     <Badge variant="profit" className="text-xs">ThetaData</Badge>
                   )}
+                  {best.deflatedSharpeVerdict === "likely_genuine" && (
+                    <Badge variant="profit" className="text-xs" title="Deflated Sharpe Ratio: the strategy's risk-adjusted return is likely genuine, not just selection bias from trying many variants.">Robust</Badge>
+                  )}
+                  {best.deflatedSharpeVerdict === "likely_overfit" && (
+                    <Badge variant="loss" className="text-xs" title="Deflated Sharpe Ratio: the strategy's Sharpe may be inflated by selection bias. Treat with caution.">Likely overfit</Badge>
+                  )}
+                  {best.deflatedSharpeVerdict === "inconclusive" && (
+                    <Badge variant="outline" className="text-xs" title="Deflated Sharpe Ratio: cannot determine whether the Sharpe is genuine or selection bias.">Inconclusive</Badge>
+                  )}
                 </CardTitle>
                 <CardDescription>
-                  Best risk-adjusted strategy for {symbol} — ranked by composite score ({optimizeGoal === "cash_flow" ? "cash flow: premium income + cycle frequency" : optimizeGoal === "long_term_gains" ? "long-term gains: total return + low assignment risk" : "balanced: return + Sharpe + drawdown + win rate"}).
+                  Best risk-adjusted strategy for {symbol} — ranked by normalized composite score ({optimizeGoal === "cash_flow" ? "cash flow: income consistency + capital utilization + premium yield" : optimizeGoal === "long_term_gains" ? "long-term gains: total return + outperformance + low drawdown" : "balanced: return + Sharpe + Sortino + Calmar + drawdown"}).
+                  {best.trials > 1 && (
+                    <> Selected from {best.trials} candidates. {best.deflatedSharpeVerdict === "likely_overfit" && "⚠ This strategy may be overfit — its Sharpe may not persist out-of-sample."}</>
+                  )}
                   Full backtest with Trading Plan is ready to run below.
                 </CardDescription>
               </CardHeader>
@@ -1266,7 +1302,49 @@ export function BacktestView() {
                   {best.rollOnAssignment && <Badge variant="secondary" className="text-xs">Roll on assignment</Badge>}
                   {(best.minCallYieldPct > 0 || best.minPutYieldPct > 0) && <Badge variant="secondary" className="text-xs">Min yield {((best.minCallYieldPct || best.minPutYieldPct) * 100).toFixed(0)}%</Badge>}
                   {best.realDataCycles > 0 && <Badge variant="profit" className="text-xs">{best.realDataCycles}/{best.totalCycles} real data cycles</Badge>}
+                  {best.stabilityScore != null && best.stabilityScore >= 0.7 && (
+                    <Badge variant="profit" className="text-xs" title="Parameter stability: neighboring configurations (delta ±0.05, adjacent DTE, buyback ±10pp) perform similarly. This is a robust plateau, not an isolated spike.">Stable plateau</Badge>
+                  )}
+                  {best.stabilityScore != null && best.stabilityScore < 0.3 && (
+                    <Badge variant="loss" className="text-xs" title="Parameter stability: neighboring configurations perform much worse. This may be an isolated spike that won't generalize.">Isolated spike</Badge>
+                  )}
                 </div>
+
+                {/* Phase 4: Walk-forward OOS validation */}
+                {best.oosAnnualizedReturn != null && (
+                  <div className="mt-4 rounded-lg border bg-primary/5 p-3">
+                    <p className="text-sm font-medium mb-2">Walk-forward out-of-sample validation</p>
+                    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      <div>
+                        <span className="text-xs text-muted-foreground">OOS annualized return: </span>
+                        <span className={cn("font-medium", best.oosAnnualizedReturn >= 0 ? "text-profit" : "text-loss")}>
+                          {formatPercent(best.oosAnnualizedReturn)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-xs text-muted-foreground">IS/OOS gap: </span>
+                        <span className={cn("font-medium", (best.isOosGap ?? 0) > 0.15 ? "text-loss" : "text-profit")}>
+                          {formatPercent(best.isOosGap ?? 0)}
+                        </span>
+                        {(best.isOosGap ?? 0) > 0.15 && (
+                          <span className="ml-1 text-xs text-loss">⚠ large gap = overfitting risk</span>
+                        )}
+                      </div>
+                      <div>
+                        <span className="text-xs text-muted-foreground">OOS consistency: </span>
+                        <span className="font-medium">{formatPercent(best.oosConsistency ?? 0, 0)}</span>
+                        <span className="ml-1 text-xs text-muted-foreground">of folds positive</span>
+                      </div>
+                      <div>
+                        <span className="text-xs text-muted-foreground">Stability score: </span>
+                        <span className="font-medium">{best.stabilityScore != null ? `${(best.stabilityScore * 100).toFixed(0)}%` : "—"}</span>
+                      </div>
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      The strategy was validated across 4 sequential time folds. In-sample (IS) parameters were frozen and tested on unseen later data (OOS). A large IS/OOS gap or low consistency signals overfitting.
+                    </p>
+                  </div>
+                )}
               </CardContent>
             </Card>
           );
@@ -1309,6 +1387,10 @@ export function BacktestView() {
                     <TableHead className="text-right">Win Rate</TableHead>
                     <TableHead className="text-right">Max DD</TableHead>
                     <TableHead className="text-right" title="Risk-adjusted return. >1.0 good, >2.0 excellent, <0 worse than T-bills">Sharpe</TableHead>
+                    <TableHead className="text-right" title="Downside-deviation Sharpe. Penalizes negative returns only.">Sortino</TableHead>
+                    <TableHead className="text-right" title="Fraction of trading days with an open option position">Util</TableHead>
+                    <TableHead className="text-right" title="Walk-forward out-of-sample annualized return">OOS Ret</TableHead>
+                    <TableHead className="text-right" title="Parameter stability score (0-100%). High = robust plateau, low = isolated spike.">Stab</TableHead>
                     <TableHead className="text-right">Real</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -1351,6 +1433,14 @@ export function BacktestView() {
                       <TableCell className="text-right">{formatPercent(r.winRate, 0)}</TableCell>
                       <TableCell className="text-right text-loss">{formatPercent(r.maxDrawdown)}</TableCell>
                       <TableCell className="text-right">{r.sharpeRatio != null ? r.sharpeRatio.toFixed(2) : "—"}</TableCell>
+                      <TableCell className="text-right">{r.sortinoRatio != null ? r.sortinoRatio.toFixed(2) : "—"}</TableCell>
+                      <TableCell className="text-right">{formatPercent(r.capitalUtilization, 0)}</TableCell>
+                      <TableCell className={cn("text-right", r.oosAnnualizedReturn != null && r.oosAnnualizedReturn >= 0 ? "text-profit" : r.oosAnnualizedReturn != null ? "text-loss" : "")}>
+                        {r.oosAnnualizedReturn != null ? formatPercent(r.oosAnnualizedReturn) : "—"}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {r.stabilityScore != null ? `${(r.stabilityScore * 100).toFixed(0)}%` : "—"}
+                      </TableCell>
                       <TableCell className="text-right text-xs whitespace-nowrap">
                         {r.realDataCycles > 0 ? `${r.realDataCycles}/${r.totalCycles}` : "—"}
                       </TableCell>
@@ -1640,6 +1730,125 @@ export function BacktestView() {
               hint={result.sharpeRatio != null && result.sharpeRatio >= 2 ? "Excellent risk-adjusted return (>2.0)" : result.sharpeRatio != null && result.sharpeRatio >= 1 ? "Good risk-adjusted return (>1.0)" : result.sharpeRatio != null && result.sharpeRatio >= 0 ? "Positive but below 1.0 — high volatility relative to returns" : "Negative — worse than risk-free rate"}
             />
           </div>
+
+          {/* Phase 2: Wheel Health metrics */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Wheel Health</CardTitle>
+              <CardDescription>
+                Realistic wheel-strategy diagnostics: capital efficiency, income consistency, drawdown depth, and regime performance.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <Stat
+                  label="Return on capital deployed"
+                  value={result.returnOnCapitalDeployed != null ? formatPercent(result.returnOnCapitalDeployed) : "—"}
+                  tone={result.returnOnCapitalDeployed != null && result.returnOnCapitalDeployed >= 0 ? "profit" : "loss"}
+                  hint="Annualized P/L ÷ time-weighted average capital at risk (collateral for puts, share value for calls). More realistic than return on total account."
+                />
+                <Stat
+                  label="Capital utilization"
+                  value={formatPercent(result.capitalUtilization, 0)}
+                  hint="Fraction of trading days with an open option position. Low utilization means cash sits idle."
+                />
+                <Stat
+                  label="Monthly income std dev"
+                  value={formatCurrency(result.monthlyIncomeStdDev, 0)}
+                  hint="Standard deviation of monthly net premium income. Lower = more consistent."
+                />
+                <Stat
+                  label="Zero-income months"
+                  value={String(result.zeroIncomeMonths)}
+                  tone={result.zeroIncomeMonths > 0 ? "loss" : undefined}
+                  hint="Months with no premium income (GTC orders never filled or no cycles closed)."
+                />
+                <Stat
+                  label="Worst cycle P/L"
+                  value={formatCurrency(result.worstCyclePnl, 0)}
+                  tone={result.worstCyclePnl < 0 ? "loss" : undefined}
+                  hint="The single worst cycle's P/L. Large negative values signal tail risk."
+                />
+                <Stat
+                  label="Worst month P/L"
+                  value={formatCurrency(result.worstMonthPnl, 0)}
+                  tone={result.worstMonthPnl < 0 ? "loss" : undefined}
+                  hint="The single worst month's net premium income."
+                />
+                <Stat
+                  label="Days underwater"
+                  value={String(result.daysUnderwater)}
+                  tone={result.daysUnderwater > 50 ? "loss" : undefined}
+                  hint="Trading days where shares were held and the stock was below the cost basis. Long stretches indicate the wheel got stuck holding losers."
+                />
+                <Stat
+                  label="Net cost basis reduction"
+                  value={formatCurrency(result.netCostBasisReduction, 2)}
+                  tone="profit"
+                  hint="Total call premium collected per share while holding, reducing the effective cost basis."
+                />
+                {result.interestIncome > 0 && (
+                  <Stat
+                    label="Interest income"
+                    value={formatCurrency(result.interestIncome, 0)}
+                    tone="profit"
+                    hint="Interest earned on idle cash at the risk-free rate."
+                  />
+                )}
+                {result.totalCommissions > 0 && (
+                  <Stat
+                    label="Total commissions"
+                    value={formatCurrency(result.totalCommissions, 0)}
+                    tone="loss"
+                    hint="Commissions + assignment fees + slippage paid. Reduces net return."
+                  />
+                )}
+              </div>
+
+              {/* Cost basis history */}
+              {result.costBasisHistory.length > 1 && (
+                <div className="mt-4">
+                  <p className="text-sm font-medium mb-2">Cost basis history</p>
+                  <div className="flex flex-wrap gap-2">
+                    {result.costBasisHistory.map((c, i) => (
+                      <Badge key={i} variant="outline" className="text-xs">
+                        {c.date}: {formatCurrency(c.costBasis, 2)}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Regime breakdown */}
+              {result.regimeBreakdown.length > 0 && (
+                <div className="mt-4">
+                  <p className="text-sm font-medium mb-2">Performance by market regime</p>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Regime</TableHead>
+                        <TableHead className="text-right">Cycles</TableHead>
+                        <TableHead className="text-right">P/L</TableHead>
+                        <TableHead className="text-right">Win rate</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {result.regimeBreakdown.map((r) => (
+                        <TableRow key={r.regime}>
+                          <TableCell className="font-medium">{r.regime}</TableCell>
+                          <TableCell className="text-right">{r.cycles}</TableCell>
+                          <TableCell className={`text-right ${r.pnl >= 0 ? "text-profit" : "text-loss"}`}>
+                            {formatCurrency(r.pnl, 0)}
+                          </TableCell>
+                          <TableCell className="text-right">{formatPercent(r.winRate)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
+            </CardContent>
+          </Card>
 
           {/* Trading Plan */}
           <Card className="border-primary/30 bg-primary/5">

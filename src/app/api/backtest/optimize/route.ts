@@ -15,6 +15,17 @@ import { getHistoricalPrices, getQuote } from "@/features/market-data/service";
 import { runBacktest, type BacktestStrategy } from "@/lib/calculations/backtester";
 import { isThetaDataConfigured, prefetchEODChains, type ThetaDataEODQuote } from "@/features/market-data/thetadata";
 import { prisma } from "@/lib/database/prisma";
+import {
+  computeNormalizedScores,
+  applyDeflatedSharpe,
+  type OptimizeResult,
+  type OptimizeGoal,
+} from "./scoring";
+import {
+  validateTopCandidates,
+  type OptionCandidate,
+  DEFAULT_WF_OPTION_CONFIG,
+} from "@/lib/quant/walk-forward-options";
 
 /**
  * Build a getDailyRows function from already-fetched EOD chain data.
@@ -48,34 +59,6 @@ export const maxDuration = 300;
 
 const ALLOWED_RANGES = ["1y", "3y", "5y", "10y", "max"] as const;
 type HistRange = (typeof ALLOWED_RANGES)[number];
-
-interface OptimizeResult {
-  strategy: string;
-  dte: number;
-  buyBackPct: number;
-  deltaTarget: number;
-  minCallYieldPct: number;
-  minPutYieldPct: number;
-  neverBelowCost: boolean;
-  averageDown: boolean;
-  rollOnAssignment: boolean;
-  strategyReturn: number;
-  annualizedReturn: number;
-  buyHoldReturn: number;
-  outperformance: number;
-  sharpeRatio: number | null;
-  maxDrawdown: number;
-  totalPremiumIncome: number;
-  winRate: number;
-  totalCycles: number;
-  assignmentCount: number;
-  earlyCloseCount: number;
-  avgPremiumPerCycle: number;
-  realDataCycles: number;
-  bsModelCycles: number;
-  compositeScore: number;
-  avgMonthlyIncome: number;
-}
 
 // Phase 1 sweep grids
 const STRATEGIES: BacktestStrategy[] = ["COVERED_CALL", "CASH_SECURED_PUT", "WHEEL"];
@@ -141,6 +124,13 @@ async function runOne(
         rollOnAssignment: cfg.rollOnAssignment,
         realData,
         getDailyRows,
+        // Phase 1 accuracy features: enable costs, interest, and Friday snapping
+        commissionPerContract: 0.65,
+        assignmentFee: 0,
+        slippagePerShare: 0.01,
+        cashInterestEnabled: true,
+        snapExpiration: true,
+        hasWeeklies: true,
       },
       spyPoints,
     );
@@ -160,6 +150,8 @@ async function runOne(
       buyHoldReturn: result.buyHoldReturn,
       outperformance: result.outperformance,
       sharpeRatio: result.sharpeRatio,
+      sortinoRatio: result.sortinoRatio,
+      calmarRatio: result.calmarRatio,
       maxDrawdown: result.maxDrawdown,
       totalPremiumIncome: result.totalPremiumIncome,
       winRate: result.winRate,
@@ -173,59 +165,21 @@ async function runOne(
       avgMonthlyIncome: result.monthlyCashFlow.length > 0
         ? result.monthlyCashFlow.reduce((s, m) => s + m.netPremium, 0) / result.monthlyCashFlow.length
         : 0,
+      interestIncome: result.interestIncome,
+      totalCommissions: result.totalCommissions,
+      returnOnCapitalDeployed: result.returnOnCapitalDeployed,
+      capitalUtilization: result.capitalUtilization,
+      monthlyIncomeStdDev: result.monthlyIncomeStdDev,
+      zeroIncomeMonths: result.zeroIncomeMonths,
+      worstCyclePnl: result.worstCyclePnl,
+      worstMonthPnl: result.worstMonthPnl,
+      daysUnderwater: result.daysUnderwater,
+      deflatedSharpe: null,
+      deflatedSharpeVerdict: null,
+      trials: 0,
     };
   } catch {
     return null;
-  }
-}
-
-type OptimizeGoal = "cash_flow" | "balanced" | "long_term_gains";
-
-function computeCompositeScore(r: OptimizeResult, riskTolerance: number, goal: OptimizeGoal): number {
-  // riskTolerance: 0 = conservative, 1 = balanced, 2 = aggressive
-  const annReturn = r.annualizedReturn;
-  const totalReturn = r.strategyReturn;
-  const sharpe = r.sharpeRatio ?? 0;
-  const dd = Math.abs(r.maxDrawdown);
-  const winRate = r.winRate;
-  const assignments = r.assignmentCount;
-  const cycles = r.totalCycles;
-  const premium = r.totalPremiumIncome;
-
-  // Goal-based weighting adjustments
-  if (goal === "cash_flow") {
-    // Maximize frequent premium income. Weight annualized return,
-    // premium volume, and cycle count. Penalize drawdown.
-    const base = annReturn * 0.4 + premium / 10000 + cycles * 0.5 + winRate * 10;
-    if (riskTolerance <= 0.5) {
-      return base + sharpe * 15 + (1 - dd) * 20;
-    } else if (riskTolerance <= 1.5) {
-      return base + sharpe * 8 + (1 - dd) * 8;
-    } else {
-      return base + sharpe * 3 + (1 - dd) * 3;
-    }
-  } else if (goal === "long_term_gains") {
-    // Maximize total return including stock appreciation. Weight
-    // totalReturn heavily, penalize assignments (which cap upside),
-    // reward lower delta (already reflected in fewer assignments).
-    const base = totalReturn * 0.6 + annReturn * 0.2 + winRate * 5;
-    const assignPenalty = assignments * 2;
-    if (riskTolerance <= 0.5) {
-      return base + sharpe * 12 + (1 - dd) * 15 - assignPenalty;
-    } else if (riskTolerance <= 1.5) {
-      return base + sharpe * 6 + (1 - dd) * 8 - assignPenalty;
-    } else {
-      return base + sharpe * 2 + (1 - dd) * 3 - assignPenalty * 0.5;
-    }
-  } else {
-    // Balanced: current behavior
-    if (riskTolerance <= 0.5) {
-      return annReturn * 0.3 + sharpe * 15 + (1 - dd) * 20 + winRate * 10;
-    } else if (riskTolerance <= 1.5) {
-      return annReturn * 0.5 + sharpe * 10 + (1 - dd) * 10 + winRate * 5;
-    } else {
-      return annReturn * 0.8 + sharpe * 5 + (1 - dd) * 5 + winRate * 2;
-    }
   }
 }
 
@@ -292,7 +246,7 @@ export async function POST(req: Request) {
 
       try {
         // --- Check optimizer result cache ---
-        const cacheKey = `optimize:v3:${symbol}:${range}:${sweepStrategies.join(",")}:${dteMin}:${dteMax}:${riskTolerance}:${goal}:${contracts}:${Number(body.sharesHeld) > 0 ? Number(body.sharesHeld) : 0}`;
+        const cacheKey = `optimize:v5:${symbol}:${range}:${sweepStrategies.join(",")}:${dteMin}:${dteMax}:${riskTolerance}:${goal}:${contracts}:${Number(body.sharesHeld) > 0 ? Number(body.sharesHeld) : 0}`;
         try {
           const cached = await prisma.optimizerResultCache.findUnique({
             where: { cacheKey },
@@ -439,10 +393,8 @@ export async function POST(req: Request) {
           }
         }
 
-        // Sort phase 1 by composite score, take top 10
-        for (const r of phase1Results) {
-          r.compositeScore = computeCompositeScore(r, riskTolerance, goal);
-        }
+        // Sort phase 1 by normalized composite score, take top 10
+        computeNormalizedScores(phase1Results, riskTolerance, goal);
         phase1Results.sort((a, b) => b.compositeScore - a.compositeScore);
         const phase1Top = phase1Results.slice(0, 10);
 
@@ -491,12 +443,92 @@ export async function POST(req: Request) {
           }
         }
 
-        // Sort all results by composite score, take top 20
-        for (const r of allResults) {
-          r.compositeScore = computeCompositeScore(r, riskTolerance, goal);
-        }
+        // Sort all results by normalized composite score, take top 20
+        computeNormalizedScores(allResults, riskTolerance, goal);
         allResults.sort((a, b) => b.compositeScore - a.compositeScore);
         const top20 = allResults.slice(0, 20);
+
+        // Apply deflated Sharpe to detect overfitting in the top candidates.
+        // We don't have per-candidate daily returns here (the backtest engine
+        // doesn't return them through the optimizer's runOne), so we pass an
+        // empty map — the deflated Sharpe will report insufficient_data but
+        // the trials count is still populated for the UI.
+        applyDeflatedSharpe(top20, new Map(), 252);
+
+        // Re-sort after deflated Sharpe penalties
+        top20.sort((a, b) => b.compositeScore - a.compositeScore);
+
+        // --- Phase 4: Walk-forward OOS validation + stability scoring ---
+        // Validate the top 5 candidates across 4 sequential folds to detect
+        // overfitting. This is the most expensive step (5 × 4 × 2 + neighbors),
+        // so it only runs on the finalists.
+        try {
+          send({
+            type: "progress",
+            message: "Running walk-forward validation on top 5 candidates…",
+            stage: "walk-forward",
+          });
+
+          const wfCandidates: OptionCandidate[] = top20.slice(0, 5).map((r) => ({
+            strategy: r.strategy as BacktestStrategy,
+            deltaTarget: r.deltaTarget,
+            dteTarget: r.dte,
+            buyBackPct: r.buyBackPct,
+          }));
+
+          const wfResults = await validateTopCandidates(
+            points,
+            wfCandidates,
+            {
+              symbol,
+              contracts: Number(body.contracts) > 0 ? Number(body.contracts) : 1,
+              riskFreeRate: 0.05,
+              startingCapital: Number(body.startingCapital) > 0 ? Number(body.startingCapital) : 10000,
+              shares: Number(body.sharesHeld) > 0 ? Number(body.sharesHeld) : 0,
+              strikeInterval: spot >= 200 ? 5 : spot >= 50 ? 2.5 : 1,
+              fillAssumption: "bid",
+              ivRiskPremium: 1.15,
+              ivSkewEnabled: true,
+              termStructureEnabled: true,
+              commissionPerContract: 0.65,
+              slippagePerShare: 0.01,
+              cashInterestEnabled: true,
+              snapExpiration: true,
+              hasWeeklies: true,
+            },
+            DEFAULT_WF_OPTION_CONFIG,
+            spyPoints,
+          );
+
+          // Map walk-forward results back to the top 20
+          for (const r of top20) {
+            const wf = wfResults.find(
+              (w) =>
+                w.candidate.strategy === r.strategy &&
+                w.candidate.deltaTarget === r.deltaTarget &&
+                w.candidate.dteTarget === r.dte &&
+                w.candidate.buyBackPct === r.buyBackPct,
+            );
+            if (wf) {
+              r.oosAnnualizedReturn = wf.oosAnnualizedReturn;
+              r.isOosGap = wf.isOosGap;
+              r.oosConsistency = wf.oosConsistency;
+              r.stabilityScore = wf.stabilityScore;
+              r.robustnessScore = wf.robustnessScore;
+            }
+          }
+
+          // Re-sort by robustness score (OOS performance × stability)
+          top20.sort((a, b) => (b.robustnessScore ?? 0) - (a.robustnessScore ?? 0));
+
+          send({
+            type: "progress",
+            message: "Walk-forward validation complete.",
+            stage: "walk-forward-done",
+          });
+        } catch (err) {
+          console.warn("[optimize] Walk-forward validation failed:", err);
+        }
 
         send({
           type: "result",

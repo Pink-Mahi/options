@@ -217,6 +217,17 @@ export async function POST(req: Request) {
             rollOnAssignment: body.rollOnAssignment === true,
             realData,
             getDailyRows,
+            // Phase 1 accuracy features (opt-in via body params, default off
+            // for backward compat with existing UI; the optimizer enables them)
+            commissionPerContract:
+              Number(body.commissionPerContract) >= 0 ? Number(body.commissionPerContract) : undefined,
+            assignmentFee:
+              Number(body.assignmentFee) >= 0 ? Number(body.assignmentFee) : undefined,
+            slippagePerShare:
+              Number(body.slippagePerShare) >= 0 ? Number(body.slippagePerShare) : undefined,
+            cashInterestEnabled: body.cashInterestEnabled === true,
+            snapExpiration: body.snapExpiration === true,
+            hasWeeklies: body.hasWeeklies !== false,
           },
           spyHist?.data.points,
         );
