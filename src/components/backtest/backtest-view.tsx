@@ -863,7 +863,7 @@ export function BacktestView() {
                     className="w-full"
                   />
                   <p className="text-xs text-muted-foreground">
-                    50% = equal puts and calls. 70% = more puts (aggressive averaging down).
+                    Fraction of total option volume that are puts. 50% = equal puts and calls. 70% = more puts (aggressive averaging down). E.g. with 400 shares: 4 calls + 4 puts at 50%.
                   </p>
                 </div>
                 <div className="space-y-1.5">
@@ -1999,7 +1999,7 @@ export function BacktestView() {
                     }
                   </p>
                   <p className="text-muted-foreground">
-                    Sell <strong>{contracts}</strong> contract(s) per cycle{strategy === "WHEEL" ? " (puts when no shares, 1 call per 100 shares held)" : strategy === "RATIO_WHEEL" ? ` (split ${Math.round(putCallRatio * 100)}% puts / ${Math.round((1 - putCallRatio) * 100)}% calls when shares held)` : "."}
+                    Sell <strong>{contracts}</strong> contract(s) per cycle{strategy === "WHEEL" ? " (puts when no shares, 1 call per 100 shares held)" : strategy === "RATIO_WHEEL" ? ` (calls cover all ${sharesHeld > 0 ? sharesHeld : contracts * 100} shares, plus ${Math.round(putCallRatio * 100)}% of that in puts)` : "."}
                   </p>
                 </div>
 

@@ -974,7 +974,9 @@ export async function runBacktest(
 
     // --- Phase 7: Ratio wheel — compute secondary put position ---
     // For RATIO_WHEEL, sell a put alongside the call when shares are held.
-    // The put is sized by putCallRatio (e.g. 0.5 = half the contracts are puts).
+    // The ratio means "fraction of total option volume that are puts":
+    //   putCallRatio = puts / (puts + calls)
+    // With 400 shares → 4 calls; at 50/50 → 4 puts too.
     let ratioPutStrike = 0;
     let ratioPutPremium = 0;
     let ratioPutContracts = 0;
@@ -982,10 +984,13 @@ export async function runBacktest(
     if (config.strategy === "RATIO_WHEEL" && sharesHeld > 0) {
       const ratio = config.putCallRatio ?? 0.5;
       const putDelta = config.putDeltaTarget ?? config.deltaTarget;
-      ratioPutContracts = Math.max(1, Math.round(config.contracts * ratio));
+      // Call side covers all shares: 1 contract per 100 shares
+      const callContracts = Math.floor(sharesHeld / 100);
+      // Put side sized by ratio: puts = calls * ratio / (1 - ratio)
+      ratioPutContracts = Math.max(0, Math.round(callContracts * ratio / Math.max(1 - ratio, 0.01)));
       // Need cash collateral for the put
       const putCollateral = spot * 100 * ratioPutContracts;
-      if (cashBalance >= putCollateral) {
+      if (ratioPutContracts > 0 && cashBalance >= putCollateral) {
         const res = findStrikeByDelta(
           spot, iv, config.dteTarget, config.riskFreeRate,
           "PUT", putDelta, config.strikeInterval,
@@ -1117,8 +1122,13 @@ export async function runBacktest(
     // Calls are sold one contract per 100 shares held, but never more than
     // the configured contract count. Average-down adds shares to lower the
     // cost basis — it should NOT inflate the position size exponentially.
+    // For RATIO_WHEEL, calls cover ALL shares (contracts is not the cap).
     const activeContracts =
-      optionType === "CALL" ? Math.max(1, Math.min(config.contracts, Math.floor(sharesHeld / 100))) : config.contracts;
+      config.strategy === "RATIO_WHEEL" && optionType === "CALL"
+        ? Math.max(1, Math.floor(sharesHeld / 100))
+        : optionType === "CALL"
+          ? Math.max(1, Math.min(config.contracts, Math.floor(sharesHeld / 100)))
+          : config.contracts;
 
     // Phase 7: Track ratio wheel call contracts
     if (config.strategy === "RATIO_WHEEL" && optionType === "CALL") {
