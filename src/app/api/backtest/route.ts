@@ -13,7 +13,7 @@ import { isThetaDataConfigured, prefetchEODChains, fetchContractDailyRows, type 
 
 export const dynamic = "force-dynamic";
 
-const ALLOWED_STRATEGIES: BacktestStrategy[] = ["COVERED_CALL", "CASH_SECURED_PUT", "WHEEL"];
+const ALLOWED_STRATEGIES: BacktestStrategy[] = ["COVERED_CALL", "CASH_SECURED_PUT", "WHEEL", "RATIO_WHEEL"];
 const ALLOWED_RANGES = ["1y", "3y", "5y", "10y", "max"] as const;
 type HistRange = (typeof ALLOWED_RANGES)[number];
 
@@ -69,7 +69,9 @@ export async function POST(req: Request) {
 
         const spot = quote.data.price;
         const contracts = Number(body.contracts) > 0 ? Number(body.contracts) : 1;
-        const shares = strategy === "CASH_SECURED_PUT" ? 0 : contracts * 100;
+        const shares = strategy === "CASH_SECURED_PUT" ? 0
+          : strategy === "RATIO_WHEEL" ? (Number(body.shares) >= 0 ? Number(body.shares) : contracts * 100)
+          : contracts * 100;
         const startingCapital =
           Number(body.startingCapital) > 0
             ? Number(body.startingCapital)
@@ -228,6 +230,30 @@ export async function POST(req: Request) {
             cashInterestEnabled: body.cashInterestEnabled === true,
             snapExpiration: body.snapExpiration === true,
             hasWeeklies: body.hasWeeklies !== false,
+            // Phase 5: Wheel management rules
+            manageAtDte: Number(body.manageAtDte) > 0 ? Number(body.manageAtDte) : undefined,
+            stopLossMultiple: Number(body.stopLossMultiple) > 0 ? Number(body.stopLossMultiple) : undefined,
+            skipEarningsWindow: Number(body.skipEarningsWindow) > 0 ? Number(body.skipEarningsWindow) : undefined,
+            earningsDates: Array.isArray(body.earningsDates) ? body.earningsDates.map(String) : undefined,
+            minIvRank: Number(body.minIvRank) >= 0 ? Number(body.minIvRank) : undefined,
+            ivRankSeries: body.ivRankSeries && typeof body.ivRankSeries === "object" && !Array.isArray(body.ivRankSeries)
+              ? new Map(Object.entries(body.ivRankSeries).map(([k, v]) => [k, Number(v)]))
+              : undefined,
+            rollTestedPut: body.rollTestedPut && typeof body.rollTestedPut === "object"
+              ? {
+                  whenDeltaAbove: Number((body.rollTestedPut as Record<string, unknown>).whenDeltaAbove) > 0 ? Number((body.rollTestedPut as Record<string, unknown>).whenDeltaAbove) : 0.50,
+                  forCreditOnly: (body.rollTestedPut as Record<string, unknown>).forCreditOnly !== false,
+                }
+              : undefined,
+            // Phase 6: Advanced volatility + early assignment
+            volEstimator: body.volEstimator === "yangZhang" || body.volEstimator === "garmanKlass" ? body.volEstimator : undefined,
+            calibratedVrp: body.calibratedVrp === true,
+            simulateEarlyAssignment: body.simulateEarlyAssignment === true,
+            earlyAssignmentThreshold: Number(body.earlyAssignmentThreshold) > 0 ? Number(body.earlyAssignmentThreshold) : undefined,
+            // Phase 7: Ratio wheel
+            putCallRatio: Number(body.putCallRatio) > 0 && Number(body.putCallRatio) < 1 ? Number(body.putCallRatio) : undefined,
+            callDeltaAfterAssignment: Number(body.callDeltaAfterAssignment) > 0 && Number(body.callDeltaAfterAssignment) < 1 ? Number(body.callDeltaAfterAssignment) : undefined,
+            putDeltaTarget: Number(body.putDeltaTarget) > 0 && Number(body.putDeltaTarget) < 1 ? Number(body.putDeltaTarget) : undefined,
           },
           spyHist?.data.points,
         );

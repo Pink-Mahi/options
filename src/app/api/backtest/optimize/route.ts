@@ -61,7 +61,7 @@ const ALLOWED_RANGES = ["1y", "3y", "5y", "10y", "max"] as const;
 type HistRange = (typeof ALLOWED_RANGES)[number];
 
 // Phase 1 sweep grids
-const STRATEGIES: BacktestStrategy[] = ["COVERED_CALL", "CASH_SECURED_PUT", "WHEEL"];
+const STRATEGIES: BacktestStrategy[] = ["COVERED_CALL", "CASH_SECURED_PUT", "WHEEL", "RATIO_WHEEL"];
 const DELTAS = [0.15, 0.20, 0.25, 0.30, 0.35, 0.40];
 const DTES = [7, 14, 21, 30, 45, 60, 90, 120, 180];
 const BUYBACKS = [0, 20, 40, 50, 60, 70, 80];
@@ -94,6 +94,9 @@ async function runOne(
     neverBelowCost: boolean;
     averageDown: boolean;
     rollOnAssignment: boolean;
+    putCallRatio?: number;
+    callDeltaAfterAssignment?: number;
+    putDeltaTarget?: number;
   },
   spyPoints?: Parameters<typeof runBacktest>[2],
   realData?: Map<string, ThetaDataEODQuote[]>,
@@ -131,6 +134,10 @@ async function runOne(
         cashInterestEnabled: true,
         snapExpiration: true,
         hasWeeklies: true,
+        // Phase 7: Ratio wheel
+        putCallRatio: cfg.putCallRatio,
+        callDeltaAfterAssignment: cfg.callDeltaAfterAssignment,
+        putDeltaTarget: cfg.putDeltaTarget,
       },
       spyPoints,
     );
@@ -223,7 +230,7 @@ export async function POST(req: Request) {
 
   // Optional strategy filter — if provided, only sweep that strategy.
   // Otherwise sweep all three (existing behavior).
-  const ALLOWED_STRATEGIES: BacktestStrategy[] = ["COVERED_CALL", "CASH_SECURED_PUT", "WHEEL"];
+  const ALLOWED_STRATEGIES: BacktestStrategy[] = ["COVERED_CALL", "CASH_SECURED_PUT", "WHEEL", "RATIO_WHEEL"];
   const requestedStrategy = String(body.strategy ?? "").toUpperCase().trim();
   const sweepStrategies = requestedStrategy && (ALLOWED_STRATEGIES as readonly string[]).includes(requestedStrategy)
     ? [requestedStrategy as BacktestStrategy]
@@ -379,6 +386,9 @@ export async function POST(req: Request) {
                   neverBelowCost: false,
                   averageDown: false,
                   rollOnAssignment: false,
+                  // Phase 7: Ratio wheel defaults
+                  putCallRatio: strategy === "RATIO_WHEEL" ? 0.5 : undefined,
+                  callDeltaAfterAssignment: strategy === "RATIO_WHEEL" ? Math.min(0.70, delta + 0.15) : undefined,
                 }, spyPoints, realData, sharedGetDailyRows);
                 if (r) phase1Results.push(r);
                 phase1Done++;
@@ -432,6 +442,9 @@ export async function POST(req: Request) {
                 neverBelowCost: bools.neverBelowCost,
                 averageDown: bools.averageDown,
                 rollOnAssignment: bools.rollOnAssignment,
+                // Phase 7: Ratio wheel defaults
+                putCallRatio: base.strategy === "RATIO_WHEEL" ? 0.5 : undefined,
+                callDeltaAfterAssignment: base.strategy === "RATIO_WHEEL" ? Math.min(0.70, base.deltaTarget + 0.15) : undefined,
               }, spyPoints, realData, sharedGetDailyRows);
               if (r) allResults.push(r);
               phase2Done++;

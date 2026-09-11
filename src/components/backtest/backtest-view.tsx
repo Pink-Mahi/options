@@ -92,7 +92,7 @@ interface PresetData {
   rollOnAssignment: boolean;
 }
 
-type StrategyOption = "COVERED_CALL" | "CASH_SECURED_PUT" | "WHEEL";
+type StrategyOption = "COVERED_CALL" | "CASH_SECURED_PUT" | "WHEEL" | "RATIO_WHEEL";
 
 interface BacktestResponse extends BacktestResult {
   startingCapital: number;
@@ -111,6 +111,7 @@ const STRATEGY_LABELS: Record<StrategyOption, string> = {
   COVERED_CALL: "Covered call",
   CASH_SECURED_PUT: "Cash-secured put",
   WHEEL: "Wheel",
+  RATIO_WHEEL: "Ratio wheel",
 };
 
 export function BacktestView() {
@@ -128,6 +129,9 @@ export function BacktestView() {
   const [buyBackPct, setBuyBackPct] = useState(0);
   const [minPutYieldPct, setMinPutYieldPct] = useState(0);
   const [rollOnAssignment, setRollOnAssignment] = useState(false);
+  // Phase 7: Ratio wheel config
+  const [putCallRatio, setPutCallRatio] = useState(0.5);
+  const [callDeltaAfterAssignment, setCallDeltaAfterAssignment] = useState(0.50);
   const [result, setResult] = useState<BacktestResponse | null>(null);
   const [comparisonResults, setComparisonResults] = useState<BacktestResponse[]>([]);
   const [loading, setLoading] = useState(false);
@@ -471,6 +475,9 @@ export function BacktestView() {
           buyBackPct: effBuyBack > 0 ? effBuyBack / 100 : undefined,
           minPutPremiumYieldPct: effMinPut > 0 ? effMinPut / 100 : undefined,
           rollOnAssignment: effRoll,
+          // Phase 7: Ratio wheel
+          putCallRatio: strategy === "RATIO_WHEEL" ? putCallRatio : undefined,
+          callDeltaAfterAssignment: strategy === "RATIO_WHEEL" ? callDeltaAfterAssignment : undefined,
           disableGtcTouch: o?.disableGtcTouch,
         }),
         cache: "no-store",
@@ -854,6 +861,7 @@ export function BacktestView() {
               >
                 <option value="ALL">All strategies</option>
                 <option value="WHEEL">Wheel</option>
+                <option value="RATIO_WHEEL">Ratio wheel</option>
                 <option value="COVERED_CALL">Covered call</option>
                 <option value="CASH_SECURED_PUT">Cash-secured put</option>
               </select>
@@ -1144,6 +1152,50 @@ export function BacktestView() {
               </span>
             </span>
           </label>
+
+          {/* Phase 7: Ratio wheel config */}
+          {strategy === "RATIO_WHEEL" && (
+            <div className="mt-3 rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-3">
+              <p className="text-sm font-medium text-primary">Ratio wheel settings</p>
+              <p className="text-xs text-muted-foreground">
+                Sells both puts and calls simultaneously each cycle, sized to maintain the target ratio.
+                After a put is assigned, the call delta increases to be more aggressive about being called
+                away — this recovers shares at a higher strike after the put lowered your cost basis.
+              </p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="space-y-1">
+                  <Label className="text-xs">Put:call ratio ({(putCallRatio * 100).toFixed(0)}% puts)</Label>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={0.9}
+                    step={0.05}
+                    value={putCallRatio}
+                    onChange={(e) => setPutCallRatio(Number(e.target.value))}
+                    className="w-full"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    50% = equal puts and calls. 70% = more puts (aggressive averaging down).
+                  </p>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Call delta after assignment</Label>
+                  <Input
+                    type="number"
+                    min={0.20}
+                    max={0.80}
+                    step={0.05}
+                    value={callDeltaAfterAssignment}
+                    onChange={(e) => setCallDeltaAfterAssignment(Number(e.target.value))}
+                    className="h-8 text-xs"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Higher delta = more likely to be called away (recover shares faster). Default: 0.50.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -1233,7 +1285,7 @@ export function BacktestView() {
         {(() => {
           const best = optimizeResults[0];
           if (!best) return null;
-          const stratLabel = best.strategy === "COVERED_CALL" ? "Covered Call" : best.strategy === "CASH_SECURED_PUT" ? "Cash-Secured Put" : "Wheel";
+          const stratLabel = best.strategy === "COVERED_CALL" ? "Covered Call" : best.strategy === "CASH_SECURED_PUT" ? "Cash-Secured Put" : best.strategy === "RATIO_WHEEL" ? "Ratio Wheel" : "Wheel";
           return (
             <Card className="border-primary/40 bg-gradient-to-br from-primary/10 to-primary/5">
               <CardHeader>
@@ -1405,7 +1457,7 @@ export function BacktestView() {
                         {i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : `#${i + 1}`}
                       </TableCell>
                       <TableCell className="font-medium text-xs">
-                        {r.strategy === "COVERED_CALL" ? "CC" : r.strategy === "CASH_SECURED_PUT" ? "CSP" : "Wheel"}
+                        {r.strategy === "COVERED_CALL" ? "CC" : r.strategy === "CASH_SECURED_PUT" ? "CSP" : r.strategy === "RATIO_WHEEL" ? "RW" : "Wheel"}
                       </TableCell>
                       <TableCell className="text-right">{r.dte}</TableCell>
                       <TableCell className="text-right">{r.buyBackPct > 0 ? `${r.buyBackPct}%` : "—"}</TableCell>
@@ -1477,7 +1529,7 @@ export function BacktestView() {
         const deltaRows = Array.from(byDelta.entries()).sort((a, b) => a[0] - b[0]);
         const bbRows = Array.from(byBuyback.entries()).sort((a, b) => a[0] - b[0]);
         const stratRows = Array.from(byStrategy.entries());
-        const stratLabel = (s: string) => s === "COVERED_CALL" ? "Covered Call" : s === "CASH_SECURED_PUT" ? "Cash-Secured Put" : "Wheel";
+        const stratLabel = (s: string) => s === "COVERED_CALL" ? "Covered Call" : s === "CASH_SECURED_PUT" ? "Cash-Secured Put" : s === "RATIO_WHEEL" ? "Ratio Wheel" : "Wheel";
         return (
           <Card className="border-primary/20">
             <CardHeader>
@@ -1704,6 +1756,30 @@ export function BacktestView() {
                 value={String(result.rolledCount)}
               />
             )}
+            {result.ratioPutContractsSold > 0 && (
+              <Stat
+                label="Ratio puts sold"
+                value={String(result.ratioPutContractsSold)}
+              />
+            )}
+            {result.ratioCallContractsSold > 0 && (
+              <Stat
+                label="Ratio calls sold"
+                value={String(result.ratioCallContractsSold)}
+              />
+            )}
+            {result.ratioDeltaAdjustments > 0 && (
+              <Stat
+                label="Delta adjustments"
+                value={String(result.ratioDeltaAdjustments)}
+              />
+            )}
+            {result.ratioRebalances > 0 && (
+              <Stat
+                label="Ratio rebalances"
+                value={String(result.ratioRebalances)}
+              />
+            )}
             {result.putNoFillCount > 0 && (
               <Stat
                 label="Put GTC not filled"
@@ -1866,6 +1942,7 @@ export function BacktestView() {
                 </p>
                 <p className="text-muted-foreground">
                   {strategy === "WHEEL" && "Sell cash-secured puts → get assigned → sell covered calls → get called away → repeat."}
+                  {strategy === "RATIO_WHEEL" && "Sell both puts and calls simultaneously at a target ratio. Put assignment averages down, then higher-delta calls recover shares faster."}
                   {strategy === "COVERED_CALL" && "Hold 100 shares per contract. Sell covered calls against them. If called away, buy shares and repeat."}
                   {strategy === "CASH_SECURED_PUT" && "Sell cash-secured puts. If assigned, hold shares or sell them, then sell more puts."}
                 </p>
@@ -1909,7 +1986,7 @@ export function BacktestView() {
                     }
                   </p>
                   <p className="text-muted-foreground">
-                    Sell <strong>{contracts}</strong> contract(s) per cycle{strategy === "WHEEL" ? " (puts when no shares, 1 call per 100 shares held)" : "."}
+                    Sell <strong>{contracts}</strong> contract(s) per cycle{strategy === "WHEEL" ? " (puts when no shares, 1 call per 100 shares held)" : strategy === "RATIO_WHEEL" ? ` (split ${Math.round(putCallRatio * 100)}% puts / ${Math.round((1 - putCallRatio) * 100)}% calls when shares held)` : "."}
                   </p>
                 </div>
 
@@ -1939,8 +2016,12 @@ export function BacktestView() {
 
                 {/* Step 5: Assignment / called away */}
                 <div className="rounded-md border bg-background p-3 space-y-1">
-                  <p className="font-medium text-primary">5. On assignment / called away</p>
-                  {strategy === "WHEEL" ? (
+                  <p className="font-medium text-primary">5. on assignment / called away</p>
+                  {strategy === "RATIO_WHEEL" ? (
+                    <p className="text-muted-foreground">
+                      When a put is assigned → buy shares at the put strike (averages down cost basis). Next cycle, sell calls at {callDeltaAfterAssignment.toFixed(2)} delta (higher = more likely called away) to recover shares at a higher strike. When calls are called away → reset call delta and rebalance back to the {Math.round(putCallRatio * 100)}/{Math.round((1 - putCallRatio) * 100)} put:call ratio.
+                    </p>
+                  ) : strategy === "WHEEL" ? (
                     <p className="text-muted-foreground">
                       {rollOnAssignment
                         ? "Roll ITM calls: buy back at intrinsic value, keep shares, sell the next call. Never let shares be called away."
@@ -2179,6 +2260,18 @@ export function BacktestView() {
                 )}
                 {result.rolledCount > 0 && (
                   <Row label="Calls rolled" value={String(result.rolledCount)} />
+                )}
+                {result.ratioPutContractsSold > 0 && (
+                  <Row label="Ratio puts sold" value={String(result.ratioPutContractsSold)} />
+                )}
+                {result.ratioCallContractsSold > 0 && (
+                  <Row label="Ratio calls sold" value={String(result.ratioCallContractsSold)} />
+                )}
+                {result.ratioDeltaAdjustments > 0 && (
+                  <Row label="Delta adjustments (after assignment)" value={String(result.ratioDeltaAdjustments)} />
+                )}
+                {result.ratioRebalances > 0 && (
+                  <Row label="Ratio rebalances (after call-away)" value={String(result.ratioRebalances)} />
                 )}
                 {result.putNoFillCount > 0 && (
                   <Row label="Put GTC not filled" value={String(result.putNoFillCount)} />
