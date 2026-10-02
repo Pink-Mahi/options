@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import { ArrowDownRight, ArrowUpRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn, formatCurrency, formatPercent, formatTimestamp, formatCompact } from "@/lib/utils";
@@ -15,10 +16,26 @@ const SESSION_LABELS: Record<MarketSession, { label: string; color: string }> = 
 
 export function StockHeader({ data, position }: { data: StockData; position: StockLot | null }) {
   const { quote } = data;
+  // Flash green/red briefly when the live price ticks up/down. The polling
+  // loop lives in StockLive; this component just reacts to prop changes.
+  const [tickDir, setTickDir] = useState<"up" | "down" | null>(null);
+  const prevLiveRef = useRef<number>(quote.extendedHoursPrice ?? quote.price);
+
+  useEffect(() => {
+    const live = quote.extendedHoursPrice ?? quote.price;
+    if (live !== prevLiveRef.current) {
+      setTickDir(live > prevLiveRef.current ? "up" : "down");
+      prevLiveRef.current = live;
+      const t = setTimeout(() => setTickDir(null), 1200);
+      return () => clearTimeout(t);
+    }
+  }, [quote]);
+
   const up = (quote.change ?? 0) >= 0;
   const sessionInfo = SESSION_LABELS[quote.marketSession];
   const hasExtHours = quote.extendedHoursPrice != null;
   const extUp = (quote.extendedHoursChange ?? 0) >= 0;
+  const isLive = quote.marketSession !== "closed";
 
   return (
     <div className="rounded-lg border bg-card p-4">
@@ -29,11 +46,22 @@ export function StockHeader({ data, position }: { data: StockData; position: Sto
             <span className="text-sm text-muted-foreground">{quote.companyName}</span>
             {position && <Badge variant="secondary">Owned: {position.shares} sh</Badge>}
             <span className={cn("rounded-md border px-2 py-0.5 text-xs font-medium", sessionInfo.color)}>
+              {isLive && (
+                <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current align-middle" />
+              )}
               {sessionInfo.label}
             </span>
           </div>
           <div className="mt-1 flex items-baseline gap-3">
-            <span className="text-3xl font-bold tabular">{formatCurrency(quote.price)}</span>
+            <span
+              className={cn(
+                "text-3xl font-bold tabular transition-colors duration-500",
+                tickDir === "up" && "text-profit",
+                tickDir === "down" && "text-loss",
+              )}
+            >
+              {formatCurrency(quote.price)}
+            </span>
             <span className={cn("flex items-center gap-1 text-sm font-medium tabular", up ? "text-profit" : "text-loss")}>
               {up ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownRight className="h-4 w-4" />}
               {formatCurrency(quote.change)}
@@ -42,8 +70,18 @@ export function StockHeader({ data, position }: { data: StockData; position: Sto
           </div>
           {hasExtHours && (
             <div className="mt-1 flex items-baseline gap-2">
-              <span className="text-xs font-medium text-muted-foreground">Ext. Hours:</span>
-              <span className="text-sm font-bold tabular">{formatCurrency(quote.extendedHoursPrice)}</span>
+              <span className="text-xs font-medium text-muted-foreground">
+                {quote.marketSession === "pre" ? "Pre-Market:" : "Ext. Hours:"}
+              </span>
+              <span
+                className={cn(
+                  "text-sm font-bold tabular transition-colors duration-500",
+                  tickDir === "up" && "text-profit",
+                  tickDir === "down" && "text-loss",
+                )}
+              >
+                {formatCurrency(quote.extendedHoursPrice)}
+              </span>
               <span className={cn("flex items-center gap-0.5 text-xs font-medium tabular", extUp ? "text-profit" : "text-loss")}>
                 {extUp ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}
                 {formatCurrency(quote.extendedHoursChange)}
@@ -53,6 +91,7 @@ export function StockHeader({ data, position }: { data: StockData; position: Sto
           )}
           <div className="mt-1 text-xs text-muted-foreground">
             Quote: {formatTimestamp(quote.timestamp)} · {quote.dataQuality === "realtime" ? "Real-time" : quote.dataQuality === "delayed" ? "Delayed" : "Unknown"}
+            {isLive && " · auto-refreshing"}
             {data.errors.length > 0 && <span className="ml-2 text-amber-600">· partial data</span>}
           </div>
         </div>

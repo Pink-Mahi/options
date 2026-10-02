@@ -1,7 +1,6 @@
 import { notFound, redirect } from "next/navigation";
 import { loadStockData } from "@/features/options/stock-data";
-import { StockHeader } from "@/components/stock/stock-header";
-import { StockTabs } from "@/components/stock/stock-tabs";
+import { StockLive } from "@/components/stock/stock-live";
 import { getPortfolio } from "@/lib/database/portfolio-repo";
 import { getSessionUser } from "@/lib/auth";
 
@@ -30,8 +29,7 @@ export default async function StockPage({
 
   return (
     <div className="space-y-4">
-      <StockHeader data={data} position={position} />
-      <StockTabs data={data} portfolio={portfolio} />
+      <StockLive data={data} position={position} portfolio={portfolio} />
     </div>
   );
 }
