@@ -215,38 +215,51 @@ export class TradierProvider implements MarketDataProvider {
     const last = num(q.last);
     const prev = num(q.prevclose);
     const regularClose = num(q.close);
+    const bid = num(q.bid);
+    const ask = num(q.ask);
     const change = num(q.change) ?? (last != null && prev != null ? last - prev : null);
     const changePct =
       num(q.change_percentage) ??
       (last != null && prev != null && prev !== 0 ? (last - prev) / prev : null);
 
-    const session = inferSession(fetchedAt);
+    // Session is inferred from the CURRENT wall-clock time. Using fetchedAt
+    // (the last trade timestamp) mislabels the session — e.g. pre-market would
+    // show "After Hours" because the last print was yesterday's 4:00 PM close.
+    const session = inferSession(new Date().toISOString());
 
     // Extended-hours logic:
-    // - After-hours (post): close is set, last != close → extended hours price is `last`
-    // - Pre-market (pre): close is null, last != prevclose → extended hours price is `last`
+    // - After-hours (post/closed): close is set, last != close → ext price = last
+    // - Pre-market (pre): prefer `last` when it's a fresh print from today
+    //   (trade_date = today ET). Otherwise fall back to the live bid/ask
+    //   midpoint — Tradier updates indicative quotes in extended sessions even
+    //   before the first pre-market trade prints.
     let extPrice: number | null = null;
     let extChange: number | null = null;
     let extChangePct: number | null = null;
+    const bidAskMid = bid != null && bid > 0 && ask != null && ask > 0 ? (bid + ask) / 2 : null;
 
-    if (session === "post" && regularClose != null && last != null) {
+    if ((session === "post" || session === "closed") && regularClose != null && last != null) {
       if (last !== regularClose) {
         extPrice = last;
         extChange = last - regularClose;
         extChangePct = regularClose !== 0 ? extChange / regularClose : null;
       }
-    } else if (session === "pre" && last != null && prev != null) {
-      extPrice = last;
-      extChange = last - prev;
-      extChangePct = prev !== 0 ? extChange / prev : null;
+    } else if (session === "pre" && prev != null) {
+      const lastIsFresh = last != null && q.trade_date != null && sameETDay(q.trade_date, Date.now());
+      const candidate = lastIsFresh ? last : (bidAskMid ?? (last != null && last !== prev ? last : null));
+      if (candidate != null) {
+        extPrice = candidate;
+        extChange = candidate - prev;
+        extChangePct = prev !== 0 ? extChange / prev : null;
+      }
     }
 
     const quote: Quote = {
       symbol: q.symbol,
       companyName: q.description ?? q.symbol,
       price: last ?? 0,
-      bid: num(q.bid),
-      ask: num(q.ask),
+      bid,
+      ask,
       previousClose: prev,
       open: num(q.open),
       dayHigh: num(q.high),
@@ -614,6 +627,17 @@ function inferSession(ts: TimestampString): Quote["marketSession"] {
   // After-hours: 4:00 PM – 8:00 PM ET
   if (totalMinutes >= 960 && totalMinutes < 1200) return "post";
   return "closed";
+}
+
+/** Whether two epoch-ms timestamps fall on the same calendar day in ET. */
+function sameETDay(aMs: number, bMs: number): boolean {
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return fmt.format(new Date(aMs)) === fmt.format(new Date(bMs));
 }
 
 function isMonthlyExpiration(d: Date): boolean {
