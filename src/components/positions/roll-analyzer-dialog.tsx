@@ -6,7 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { cn, formatCurrency, formatPercent, formatNumber } from "@/lib/utils";
+import { cn, formatCurrency, formatPercent, formatNumber, formatStrike } from "@/lib/utils";
 import type { OptionPosition } from "@/lib/types";
 import type { RollAnalysis, RollCandidate } from "@/features/options/roll-analyzer";
 
@@ -126,7 +126,7 @@ export function RollAnalyzerDialog({ position, onClose }: { position: OptionPosi
                           <TableRow key={i}>
                             <TableCell>{r.expiration}</TableCell>
                             <TableCell>{r.dte}</TableCell>
-                            <TableCell>{formatCurrency(r.strike, 0)}</TableCell>
+                            <TableCell>{formatStrike(r.strike)}</TableCell>
                             <TableCell className="text-loss">{formatCurrency(r.buybackCost)}</TableCell>
                             <TableCell className="text-profit">{formatCurrency(r.newPremium)}</TableCell>
                             <TableCell className={cn("font-medium", r.netCredit >= 0 ? "text-profit" : "text-loss")}>{formatCurrency(r.netCredit)}</TableCell>

@@ -5,7 +5,7 @@ import { AlertTriangle, TrendingDown, TrendingUp } from "lucide-react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { cn, formatCurrency, formatPercent, formatNumber } from "@/lib/utils";
+import { cn, formatCurrency, formatPercent, formatNumber, formatStrike } from "@/lib/utils";
 
 interface PositionGreeks {
   positionId: string;
@@ -179,7 +179,7 @@ export function PortfolioGreeksView() {
                   >
                     <TableCell className="font-medium">{a.symbol}</TableCell>
                     <TableCell><Badge variant="outline">{a.optionType}</Badge></TableCell>
-                    <TableCell>{formatCurrency(a.strike, 0)}</TableCell>
+                    <TableCell>{formatStrike(a.strike)}</TableCell>
                     <TableCell>{a.expiration}</TableCell>
                     <TableCell>
                       <Badge variant={a.dte <= 7 ? "loss" : a.dte <= 21 ? "warning" : "secondary"}>{a.dte}</Badge>
@@ -243,7 +243,7 @@ export function PortfolioGreeksView() {
                   <TableRow key={p.positionId}>
                     <TableCell className="font-medium">{p.symbol}</TableCell>
                     <TableCell><Badge variant="outline">{p.optionType}</Badge></TableCell>
-                    <TableCell>{formatCurrency(p.strike, 0)}</TableCell>
+                    <TableCell>{formatStrike(p.strike)}</TableCell>
                     <TableCell>{p.expiration}</TableCell>
                     <TableCell>{p.contracts}</TableCell>
                     <TableCell className={cn("tabular", p.delta < 0 ? "text-loss" : "text-profit")}>{formatNumber(p.delta, 0)}</TableCell>

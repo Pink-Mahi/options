@@ -9,7 +9,7 @@ import { Button, Input, Label, Select } from "@/components/ui";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { openOptionPosition, closeOptionPosition, deleteOptionPosition } from "@/app/portfolio/actions";
 import { RollAnalyzerDialog } from "@/components/positions/roll-analyzer-dialog";
-import { cn, formatCurrency, formatPercent, formatNumber } from "@/lib/utils";
+import { cn, formatCurrency, formatPercent, formatNumber, formatStrike } from "@/lib/utils";
 import type { Portfolio, OptionPosition } from "@/lib/types";
 
 const STATUS_VARIANT: Record<string, "profit" | "warning" | "loss" | "secondary" | "outline"> = {
@@ -127,7 +127,7 @@ export function PositionsView({ portfolio }: { portfolio: Portfolio }) {
                       <TableCell className="font-medium"><Link href={`/stock/${p.symbol}`} className="hover:underline">{p.symbol}</Link></TableCell>
                       <TableCell><Badge variant="outline">{p.optionType}</Badge></TableCell>
                       <TableCell>{p.strategyType.replace(/_/g, " ")}</TableCell>
-                      <TableCell>{formatCurrency(p.strike, 0)}</TableCell>
+                      <TableCell>{formatStrike(p.strike)}</TableCell>
                       <TableCell>{p.expiration}</TableCell>
                       <TableCell>
                         <Badge variant={dte <= 7 ? "loss" : dte <= 21 ? "warning" : "secondary"}>{dte}</Badge>
@@ -183,7 +183,7 @@ export function PositionsView({ portfolio }: { portfolio: Portfolio }) {
                   <TableRow key={p.id}>
                     <TableCell className="font-medium">{p.symbol}</TableCell>
                     <TableCell>{p.optionType}</TableCell>
-                    <TableCell>{formatCurrency(p.strike, 0)}</TableCell>
+                    <TableCell>{formatStrike(p.strike)}</TableCell>
                     <TableCell>{p.expiration}</TableCell>
                     <TableCell><Badge variant={STATUS_VARIANT[p.status]}>{p.status.replace(/_/g, " ")}</Badge></TableCell>
                     <TableCell className="text-profit">{formatCurrency(p.openingCreditDebit * p.contracts * 100, 0)}</TableCell>

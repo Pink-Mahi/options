@@ -15,6 +15,17 @@ export function formatCurrency(n: number | null | undefined, digits = 2): string
   });
 }
 
+/**
+ * Format an option strike: whole-dollar strikes stay clean ($375), fractional
+ * strikes keep decimals ($377.50, $32.50). Never rounds — rounding .50 strikes
+ * to whole dollars displays a strike that doesn't exist.
+ */
+export function formatStrike(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "—";
+  const digits = Math.abs(n % 1) > 1e-9 ? 2 : 0;
+  return formatCurrency(n, digits);
+}
+
 export function formatPercent(n: number | null | undefined, digits = 2): string {
   if (n == null || !Number.isFinite(n)) return "—";
   return `${(n * 100).toFixed(digits)}%`;

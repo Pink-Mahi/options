@@ -7,7 +7,7 @@ import { Select } from "@/components/ui";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { scanCoveredCalls } from "@/features/options/scanner";
 import { calculateAssignmentProbability, type AssignmentProbability } from "@/lib/calculations/historical";
-import { cn, formatCurrency, formatPercent, formatNumber } from "@/lib/utils";
+import { cn, formatCurrency, formatPercent, formatNumber, formatStrike } from "@/lib/utils";
 import type { CoveredCallCandidate, OptionChain, ScannerObjective } from "@/lib/types";
 import type { StockData } from "@/features/options/stock-data";
 
@@ -160,7 +160,7 @@ export function ComparisonTab({ data }: { data: StockData }) {
                       <TableCell className="font-medium">{r.label}</TableCell>
                       <TableCell>{r.candidate ? r.candidate.contract.expiration : "—"}</TableCell>
                       <TableCell>{r.dte}</TableCell>
-                      <TableCell>{r.candidate ? formatCurrency(r.candidate.contract.strike, 0) : "—"}</TableCell>
+                      <TableCell>{r.candidate ? formatStrike(r.candidate.contract.strike) : "—"}</TableCell>
                       <TableCell>{r.candidate ? formatPercent(r.candidate.strikeOtmPercent, 1) : "—"}</TableCell>
                       <TableCell>{r.candidate ? formatNumber(r.candidate.delta, 2) : "—"}</TableCell>
                       <TableCell>{r.candidate ? formatCurrency(r.candidate.premiumPerContract, 0) : "—"}</TableCell>

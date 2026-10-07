@@ -12,7 +12,7 @@ import { FieldWithHelp, TableHeadWithHelp, EXPLAINERS } from "@/components/stock
 import { StrategyPresetSelector } from "@/components/stock/strategy-preset-selector";
 import { scanCashSecuredPuts } from "@/features/options/scanner";
 import { calculateAssignmentProbability, type AssignmentProbability } from "@/lib/calculations/historical";
-import { cn, formatCurrency, formatPercent, formatNumber } from "@/lib/utils";
+import { cn, formatCurrency, formatPercent, formatNumber, formatStrike } from "@/lib/utils";
 import type { CashSecuredPutCandidate, ScannerObjective } from "@/lib/types";
 import type { StockData } from "@/features/options/stock-data";
 import type { Portfolio } from "@/lib/types";
@@ -171,7 +171,7 @@ export function CashSecuredPutsTab({
                 <TableBody>
                   {candidatesWithAssignment.slice(0, 25).map(({ candidate: c, assignment }) => (
                     <TableRow key={c.contract.symbol} className={cn("cursor-pointer", selected?.contract.symbol === c.contract.symbol && "bg-muted")} onClick={() => setSelected(c)}>
-                      <TableCell className="font-medium">{formatCurrency(c.contract.strike, 0)}</TableCell>
+                      <TableCell className="font-medium">{formatStrike(c.contract.strike)}</TableCell>
                       <TableCell>{formatPercent(c.strikeDiscountPercent, 1)}</TableCell>
                       <TableCell>{formatCurrency(c.premiumPerContract, 0)}</TableCell>
                       <TableCell className="font-medium text-profit">{formatCurrency(c.effectivePurchasePrice)}</TableCell>

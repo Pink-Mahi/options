@@ -12,7 +12,7 @@ import { calculateCoveredCall } from "@/lib/calculations/covered-call";
 import { calculateCashSecuredPut } from "@/lib/calculations/cash-secured-put";
 import { coveredCallPayoff, cashSecuredPutPayoff, expirationProfitTable } from "@/lib/calculations/payoff";
 import { resolveOptionPrice } from "@/lib/calculations/core";
-import { cn, formatCurrency, formatPercent, formatNumber } from "@/lib/utils";
+import { cn, formatCurrency, formatPercent, formatNumber, formatStrike } from "@/lib/utils";
 import type { OptionContract, PayoffPoint, PriceAssumption } from "@/lib/types";
 import type { StockData } from "@/features/options/stock-data";
 
@@ -78,7 +78,7 @@ export function CalculatorTab({
             <Field label="Strike">
               <Select value={String(strike)} onChange={(e) => setStrike(e.target.value === "" ? "" : Number(e.target.value))}>
                 <option value="">Select strike…</option>
-                {list.map((c) => <option key={c.symbol} value={c.strike}>{formatCurrency(c.strike, 0)}{c.inTheMoney ? " (ITM)" : ""}</option>)}
+                {list.map((c) => <option key={c.symbol} value={c.strike}>{formatStrike(c.strike)}{c.inTheMoney ? " (ITM)" : ""}</option>)}
               </Select>
             </Field>
             <Field label="Pricing assumption">

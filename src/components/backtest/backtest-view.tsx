@@ -17,7 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button, Input, Label } from "@/components/ui";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { cn, formatCurrency, formatPercent } from "@/lib/utils";
+import { cn, formatCurrency, formatPercent, formatStrike } from "@/lib/utils";
 import type { BacktestResult } from "@/lib/calculations/backtester";
 import type { MarketContext } from "@/lib/calculations/market-context";
 import { Save, Bookmark, Trash2, ChevronDown, Sparkles, Activity, Database } from "lucide-react";
@@ -2399,7 +2399,7 @@ export function BacktestView() {
                         <TableCell className="text-xs whitespace-nowrap">
                           {closedEarly && nextTrade ? (
                             <span className="text-muted-foreground">
-                              → re-sold same day @ {formatCurrency(nextTrade.strike, 0)} strike, new exp {nextTrade.expirationDate}
+                              → re-sold same day @ {formatStrike(nextTrade.strike)} strike, new exp {nextTrade.expirationDate}
                             </span>
                           ) : (
                             <span className="text-muted-foreground">—</span>

@@ -10,7 +10,7 @@ import { useOptionChain } from "@/components/stock/use-option-chain";
 import { ExpirationPicker } from "@/components/stock/expiration-picker";
 import { calculateCoveredCall } from "@/lib/calculations/covered-call";
 import { calculateCashSecuredPut } from "@/lib/calculations/cash-secured-put";
-import { cn, formatCurrency, formatPercent, formatNumber } from "@/lib/utils";
+import { cn, formatCurrency, formatPercent, formatNumber, formatStrike } from "@/lib/utils";
 import type { OptionContract } from "@/lib/types";
 import type { StockData } from "@/features/options/stock-data";
 
@@ -86,7 +86,7 @@ export function ContractComparisonTab({
                 <option value="">Select strike…</option>
                 {availableStrikes.map((c) => (
                   <option key={c.symbol} value={c.strike}>
-                    {formatCurrency(c.strike, 0)}{c.inTheMoney ? " (ITM)" : ""} · {formatCurrency(c.midpoint ?? 0)} · IV {formatPercent(c.impliedVolatility)}
+                    {formatStrike(c.strike)}{c.inTheMoney ? " (ITM)" : ""} · {formatCurrency(c.midpoint ?? 0)} · IV {formatPercent(c.impliedVolatility)}
                   </option>
                 ))}
               </Select>
@@ -151,7 +151,7 @@ function ComparisonTable({
     },
     {
       label: "Strike",
-      values: selected.map((s) => formatCurrency(s.contract.strike, 0)),
+      values: selected.map((s) => formatStrike(s.contract.strike)),
     },
     {
       label: "Expiration",

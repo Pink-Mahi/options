@@ -11,7 +11,7 @@ import { calculateCoveredCall } from "@/lib/calculations/covered-call";
 import { calculateCashSecuredPut } from "@/lib/calculations/cash-secured-put";
 import { IVSkewChart } from "@/components/charts/iv-skew-chart";
 import { calculateAssignmentProbability, type AssignmentProbability } from "@/lib/calculations/historical";
-import { cn, formatCurrency, formatPercent, formatNumber } from "@/lib/utils";
+import { cn, formatCurrency, formatPercent, formatNumber, formatStrike } from "@/lib/utils";
 import type { OptionContract, HistoricalPricePoint } from "@/lib/types";
 import type { StockData } from "@/features/options/stock-data";
 
@@ -268,7 +268,7 @@ function SideBySideChain({
               <ContractCells contract={r.call} side="call" itm={callItm} spot={spot} points={points} onSelect={onSelect} />
               {/* Strike (center) */}
               <td className={cn("px-2 py-1 text-center font-bold tabular", isAtm && "text-primary")}>
-                {formatCurrency(r.strike, 0)}
+                {formatStrike(r.strike)}
                 {isAtm && <div className="text-[9px] text-primary">ATM</div>}
               </td>
               {/* Put columns */}
@@ -419,7 +419,7 @@ function SingleSideChain({
               onClick={() => onSelect(contract)}
             >
               <td className={cn("px-2 py-1 text-right font-bold tabular", isAtm && "text-primary")}>
-                {formatCurrency(r.strike, 0)}
+                {formatStrike(r.strike)}
                 {isAtm && <div className="text-[9px] text-primary">ATM</div>}
               </td>
               <td className="px-1 py-1 text-right tabular">{formatCurrency(contract.bid)}</td>
@@ -490,7 +490,7 @@ function QuickAnalysisModal({
       >
         <CardHeader className="flex-row items-center justify-between space-y-0">
           <CardTitle className="text-base">
-            {contract.underlyingSymbol} {formatCurrency(contract.strike, 0)} {isCall ? "Call" : "Put"} · {contract.expiration} · {contract.daysToExpiration} DTE
+            {contract.underlyingSymbol} {formatStrike(contract.strike)} {isCall ? "Call" : "Put"} · {contract.expiration} · {contract.daysToExpiration} DTE
           </CardTitle>
           <Button size="icon" variant="ghost" onClick={onClose}><X className="h-4 w-4" /></Button>
         </CardHeader>
