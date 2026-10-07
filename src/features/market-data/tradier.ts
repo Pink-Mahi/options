@@ -218,10 +218,15 @@ export class TradierProvider implements MarketDataProvider {
     const bid = num(q.bid);
     const ask = num(q.ask);
     const change = num(q.change) ?? (last != null && prev != null ? last - prev : null);
+    // Tradier's change_percentage is in percent units (-1.03 = -1.03%); the
+    // Quote type stores a decimal fraction (-0.0103), so divide by 100.
+    const rawPct = num(q.change_percentage);
     const changePct =
-      num(q.change_percentage) ??
-      (last != null && prev != null && prev !== 0 ? (last - prev) / prev : null);
-
+      rawPct != null
+        ? rawPct / 100
+        : last != null && prev != null && prev !== 0
+          ? (last - prev) / prev
+          : null;
     // Session is inferred from the CURRENT wall-clock time. Using fetchedAt
     // (the last trade timestamp) mislabels the session — e.g. pre-market would
     // show "After Hours" because the last print was yesterday's 4:00 PM close.

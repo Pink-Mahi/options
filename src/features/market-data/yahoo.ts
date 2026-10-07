@@ -187,7 +187,9 @@ export class YahooFinanceProvider implements MarketDataProvider {
       dayHigh: q.regularMarketDayHigh ?? null,
       dayLow: q.regularMarketDayLow ?? null,
       change: q.regularMarketChange ?? null,
-      changePercent: q.regularMarketChangePercent ?? null,
+      // Yahoo's percent fields are in percent units (1.23 = 1.23%); the Quote
+      // type stores a decimal fraction, so divide by 100.
+      changePercent: q.regularMarketChangePercent != null ? q.regularMarketChangePercent / 100 : null,
       volume: q.regularMarketVolume ?? null,
       marketCap: q.marketCap ?? null,
       timestamp: fetchedAt,
